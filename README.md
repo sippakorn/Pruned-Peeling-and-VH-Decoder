@@ -15,3 +15,5 @@ Please cite this work as:
   &emsp; eprint      = {http://arxiv.org/abs/2208.01002v1},  
   &emsp; url         = {http://arxiv.org/abs/2208.01002v1}  
 }  
+
+pip install -r requirements.txt 
