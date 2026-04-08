@@ -1224,29 +1224,29 @@ def main():
     #print(Toric3_sample_performance_dictionary[-1])
 
     # fix a number of trials to run
-    num_trials = 5000 #25000
-    step = 32
+    num_trials = 500 #25000
+    step = 90
 
-    # 625 qubit PEG code
-    C_625 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')
-    C_625_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_625,0.32,step,num_trials)
+    # # 625 qubit PEG code
+    # C_625 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')
+    # C_625_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_625,0.9,step,num_trials)
 
-    # write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=False)
-    write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=True)
+    # # write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=False)
+    # write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=True)
 
-    # 1225 qubit PEG code
-    C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
-    C_1225_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1225,0.32,step,num_trials)
-    write_list_of_performance_dictionaries_to_file(C_1225,C_1225_perf_dict_list,ArrayJob=True)
+    # # 1225 qubit PEG code
+    # C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
+    # C_1225_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1225,0.32,step,num_trials)
+    # write_list_of_performance_dictionaries_to_file(C_1225,C_1225_perf_dict_list,ArrayJob=True)
 
-    # 1600 qubit PEG code
-    C_1600 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')
-    C_1600_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1600,0.32,step,num_trials)
-    write_list_of_performance_dictionaries_to_file(C_1600,C_1600_perf_dict_list,ArrayJob=True)
+    # # 1600 qubit PEG code
+    # C_1600 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')
+    # C_1600_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1600,0.32,step,num_trials)
+    # write_list_of_performance_dictionaries_to_file(C_1600,C_1600_perf_dict_list,ArrayJob=True)
 
     # 2025 qubit PEG code
     C_2025 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n2025_k81_classicalH.txt')
-    C_2025_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_2025,0.32,step,num_trials)
+    C_2025_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_2025,0.9,step,num_trials)
     write_list_of_performance_dictionaries_to_file(C_2025,C_2025_perf_dict_list,ArrayJob=True)
 
 
