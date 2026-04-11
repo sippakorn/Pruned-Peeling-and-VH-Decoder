@@ -22,6 +22,8 @@ from Hypergraph_Product_Code_Construction_v3 import standard_form
 # Import the 3x3 toric code example for simple testing
 from Hypergraph_Product_Code_Construction_v3 import Toric3
 
+from cluster_decoder_v2 import cluster_decoder_v2
+
 
 
 
@@ -542,7 +544,7 @@ def solve_cluster_tree_by_recursive_peeling(HGP_code,
 # Function Outputs:
 # predicted_e_index_set: the index set for the predicted error vector which gives the original syndrome.
 
-def cluster_decoder(HGP_code,E_index_set,s_index_set):
+def cluster_decoder_vh(HGP_code,E_index_set,s_index_set):
     
     # Infer the set of adjacent check indices to the given set of erased qubit indices.
     Ch_index_set = compute_adjacent_check_indices(HGP_code,E_index_set)
@@ -668,7 +670,7 @@ def is_product_of_generators_fully_erased(list_of_generators,index_set):
 # combined_decoder_results_dict: a decoder consolidating the results, if successful (number of dangling checks used, etc.)
 
 
-def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_input):
+def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_input,C=None):
     
     # Initialize some local versions of the input and the predicted error vector to return.
     predicted_e_index_set = set()
@@ -927,7 +929,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
             
             # The cluster decoder is the last method we apply; if it fails, then flag this as a decoding failure.
             try:
-                cluster_decoder_pred_e_index_set = cluster_decoder(HGP_code,E_index_set,s_index_set)
+                cluster_decoder_pred_e_index_set = cluster_decoder_v2(HGP_code,E_index_set,s_index_set,C=C)
                 
                 # Confirm that the predicted error vector obtained in this way matches the remaining syndrome.
                 if (HGP_code.Hz_syn_index_set_for_X_err(cluster_decoder_pred_e_index_set) != s_index_set):
@@ -975,7 +977,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
 # Function Outputs:
 # simulation_results_dict: a dictionary storing the results of the simulation (number of failures, successes, etc.)
 
-def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate):
+def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate,C=None):
     
     # Initialize some variables to track the decoder's performance.
     num_successes_peeling_M0 = 0
@@ -1011,7 +1013,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
             # Run the decoder using the given erasure pattern and syndrome.
             # We may infer the rseults from the returned dictionary.
             predicted_e_index_set, combined_decoder_results_dict = combined_peeling_and_cluster_decoder(
-                HGP_code,E_index_set,s_index_set)
+                HGP_code,E_index_set,s_index_set,C=C)
             
             # The total error is the symmetric difference of the original and predicted errors.
             total_e_index_set = e_index_set.symmetric_difference(predicted_e_index_set)
