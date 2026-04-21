@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import sparse as sp
 
 
 # Functions to convert between the 1-dimensional and 2-dimensional indexing used in the HGP code construction.
@@ -126,6 +127,77 @@ def standard_form(M_input):
              A_transpose.append(M_standard[:,j])
     A = np.transpose(np.array(A_transpose))
     
+    return M_standard, A, column_indices_of_pivots
+
+
+def sparse_form(M_sparse):
+    #### Drop-in replacement for standard_form() that operates on a scipy.sparse
+    #### matrix of 0/1 entries. Internally represents each row as a Python set
+    #### of column indices holding 1s; XOR of rows becomes set symmetric
+    #### difference. Pivot-selection rule mirrors standard_form exactly
+    #### (topmost row >= i containing column j; else advance j), so the
+    #### returned RREF and pivot list are bit-identical to standard_form's
+    #### output for every binary input.
+
+    if not sp.issparse(M_sparse):
+        raise TypeError("sparse_form expects a scipy.sparse matrix input.")
+
+    M_coo = M_sparse.tocoo()
+    m, n = M_coo.shape
+
+    rows = [set() for _ in range(m)]
+    for r, c, v in zip(M_coo.row.tolist(), M_coo.col.tolist(), M_coo.data.tolist()):
+        if int(v) % 2 == 1:
+            row_set = rows[r]
+            if c in row_set:
+                row_set.remove(c)
+            else:
+                row_set.add(c)
+
+    column_indices_of_pivots = []
+    i = 0
+    j = 0
+
+    while i < m and j < n:
+        k = None
+        for r_idx in range(i, m):
+            if j in rows[r_idx]:
+                k = r_idx
+                break
+
+        if k is None:
+            j += 1
+            continue
+
+        column_indices_of_pivots.append(j)
+
+        if k != i:
+            rows[i], rows[k] = rows[k], rows[i]
+
+        pivot_set = rows[i]
+        for r_idx in range(m):
+            if r_idx != i and j in rows[r_idx]:
+                rows[r_idx] = rows[r_idx] ^ pivot_set
+
+        i += 1
+        j += 1
+
+    r = m
+    while r > 0 and not rows[r - 1]:
+        r -= 1
+
+    M_standard = np.zeros((r, n), dtype=int)
+    for idx in range(r):
+        for c in rows[idx]:
+            M_standard[idx, c] = 1
+
+    pivot_col_set = set(column_indices_of_pivots)
+    non_pivot_cols = [c for c in range(n) if c not in pivot_col_set]
+    if non_pivot_cols:
+        A = M_standard[:, non_pivot_cols].copy()
+    else:
+        A = np.zeros((r, 0), dtype=int)
+
     return M_standard, A, column_indices_of_pivots
 
 

@@ -23,6 +23,7 @@ from Hypergraph_Product_Code_Construction_v3 import standard_form
 from Hypergraph_Product_Code_Construction_v3 import Toric3
 
 from cluster_decoder_v2 import cluster_decoder_v2
+from cluster_decoder_v3 import cluster_decoder_v3
 
 
 
@@ -736,6 +737,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
     # Finally, initialize a dictionary to be returned at the end with the solution.
     # This dictionary will catalogue the steps used if a successful decoding occurs.
     combined_decoder_results_dict = {}
+    global_max_comp_size = 0
             
     
     while (s_index_set != set()):
@@ -929,7 +931,10 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
             
             # The cluster decoder is the last method we apply; if it fails, then flag this as a decoding failure.
             try:
-                cluster_decoder_pred_e_index_set = cluster_decoder_v2(HGP_code,E_index_set,s_index_set,C=C)
+                cluster_decoder_pred_e_index_set = cluster_decoder_v3(HGP_code,E_index_set,s_index_set,C=C)
+                
+                # if (global_max_comp_size < len(cluster_decoder_pred_e_index_set)):
+                #     global_max_comp_size = len(cluster_decoder_pred_e_index_set)
                 
                 # Confirm that the predicted error vector obtained in this way matches the remaining syndrome.
                 if (HGP_code.Hz_syn_index_set_for_X_err(cluster_decoder_pred_e_index_set) != s_index_set):
@@ -945,8 +950,33 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
                     # Increment the counter for classical stopping sets (those sets not correctable by peeling/generators alone)
                     classical_stopping_sets_used += 1
                 
-            except:
-                raise Exception('Decoding failure: exhausted dangling checks/erased generators and cluster decoder failed.')
+            except Exception as e:
+
+                # raise Exception('Decoding failure: exhausted dangling checks/erased generators and cluster decoder failed.')
+                # try:
+                # cluster_decoder_pred_e_index_set = cluster_decoder_v3(HGP_code,E_index_set,s_index_set,C=C)
+
+                # if (global_max_comp_size < len(cluster_decoder_pred_e_index_set)):
+                #     global_max_comp_size = len(cluster_decoder_pred_e_index_set)
+
+                # # Confirm that the predicted error vector obtained in this way matches the remaining syndrome.
+                # if (HGP_code.Hz_syn_index_set_for_X_err(cluster_decoder_pred_e_index_set) != s_index_set):
+                #     raise Exception('Decoding failure: cluster decoder predicted error vector does not give correct syndrome.')
+                # else:
+                #     # If the syndromes do match, then this a decoding success.
+                #     # We may update the total predicted error vector accordingly.
+                #     # Also, we may replace the E_index_set and s_index_set with empty sets.
+                #     predicted_e_index_set.update(cluster_decoder_pred_e_index_set)
+                #     E_index_set = set()
+                #     s_index_set = set()
+                    
+                #     # Increment the counter for classical stopping sets (those sets not correctable by peeling/generators alone)
+                #     classical_stopping_sets_used += 1
+                # except Exception as e:
+                print("Decoding failure: exhausted dangling checks/erased generators and cluster decoder failed.")
+                print(f"Error: {e}")
+                s_index_set = set()
+                pass
                 
     
     # Update the dictonary of results.
@@ -954,6 +984,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
     combined_decoder_results_dict['entirely_erased_generators_used'] = entirely_erased_generators_used
     combined_decoder_results_dict['entirely_erased_generator_products_used'] = entirely_erased_generator_products_used
     combined_decoder_results_dict['classical_stopping_sets_used'] = classical_stopping_sets_used
+    combined_decoder_results_dict['max_component_size'] = global_max_comp_size
     
     
     # Return the predicted error vector and the dictionary of results.
@@ -984,6 +1015,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     num_successes_peeling_M1 = 0
     num_successes_peeling_M2 = 0
     num_successes_peeling_M2_cluster = 0
+    max_comp_size_list = []
     
     # We make a distinction between "true" decoder failures (where the decoder cannot complete) and logical errors.
     # However, these are both counted as decoder failures when computing the failure rate, and hence combined at the end.
@@ -1049,6 +1081,9 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
                     num_successes_peeling_M2 += 1
                     num_successes_peeling_M1 += 1
                     num_successes_peeling_M0 += 1
+            
+            if (combined_decoder_results_dict['max_component_size'] > 0):
+                max_comp_size_list.append(combined_decoder_results_dict['max_component_size'])
                     
         except:
             # If the decoder failed to predict an error, this is a true decoding failure.
@@ -1078,6 +1113,12 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     simulation_results_dict['failure_rate_peeling_M2'] = ((num_iterations - num_successes_peeling_M2)/float(num_iterations))
     simulation_results_dict['failure_rate_peeling_M2_cluster'] = (
         (num_iterations - num_successes_peeling_M2_cluster)/float(num_iterations))
+    
+    #print(max_comp_size_list)
+    simulation_results_dict['max_max_component_size'] = max(max_comp_size_list) if max_comp_size_list else 0
+    simulation_results_dict['average_max_component_size'] = sum(max_comp_size_list)/float(len(max_comp_size_list)) if max_comp_size_list else 0.0
+    simulation_results_dict['std_max_component_size'] = (sum([(x - simulation_results_dict['average_max_component_size'])**2 for x in max_comp_size_list])/float(len(max_comp_size_list)))**0.5 if max_comp_size_list else 0.0
+    
             
     # Return the number of decoding failures, logical errors, and decoding successes.
     return simulation_results_dict
@@ -1097,7 +1138,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
 # Function Outputs:
 # list_of_decoder_performance_dicts: a list of dictionaries tracking the decoder's performance at different error rates.
 
-def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0):
+def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0.35):
     
     # Initialize a dictionary to store the performance information for this code.
     list_of_decoder_performance_dicts = []
@@ -1194,29 +1235,29 @@ def main():
     #print(Toric3_sample_performance_dictionary[-1])
 
     # fix a number of trials to run
-    num_trials = 25000
+    num_trials = 100
 
     # 625 qubit PEG code
     C_625 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')
-    C_625_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_625,0.32,16,num_trials)
+    C_625_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_625,0.9,55,num_trials)
 
     #write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=False)
     write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=True)
 
-    # 1225 qubit PEG code
-    C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
-    C_1225_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1225,0.32,16,num_trials)
-    write_list_of_performance_dictionaries_to_file(C_1225,C_1225_perf_dict_list,ArrayJob=True)
+    # # 1225 qubit PEG code
+    # C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
+    # C_1225_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1225,0.32,16,num_trials)
+    # write_list_of_performance_dictionaries_to_file(C_1225,C_1225_perf_dict_list,ArrayJob=True)
 
-    # 1600 qubit PEG code
-    C_1600 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')
-    C_1600_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1600,0.32,16,num_trials)
-    write_list_of_performance_dictionaries_to_file(C_1600,C_1600_perf_dict_list,ArrayJob=True)
+    # # 1600 qubit PEG code
+    # C_1600 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')
+    # C_1600_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1600,0.32,16,num_trials)
+    # write_list_of_performance_dictionaries_to_file(C_1600,C_1600_perf_dict_list,ArrayJob=True)
 
     # 2025 qubit PEG code
-    C_2025 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n2025_k81_classicalH.txt')
-    C_2025_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_2025,0.32,16,num_trials)
-    write_list_of_performance_dictionaries_to_file(C_2025,C_2025_perf_dict_list,ArrayJob=True)
+    # C_2025 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n2025_k81_classicalH.txt')
+    # C_2025_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_2025,0.9,90,num_trials)
+    # write_list_of_performance_dictionaries_to_file(C_2025,C_2025_perf_dict_list,ArrayJob=True)
 
 
     
