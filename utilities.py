@@ -5,6 +5,8 @@ from itertools import chain, combinations
 
 from Hypergraph_Product_Code_Construction_v3 import HGP_code
 from Hypergraph_Product_Code_Construction_v3 import standard_form
+from Hypergraph_Product_Code_Construction_v3 import sparse_form
+from scipy.sparse import csr_matrix
 
 
 # Functions to convert between the 1-dimensional and 2-dimensional indexing used in the HGP code construction.
@@ -1008,7 +1010,47 @@ def perform_classical_syndrome_analysis_with_erasure(H,s,E_index_set):
     # This should always yield a solution, but if I messed up and it doesn't, flag this.
     if (not np.array_equal(np.dot(H,predicted_e)%2,s)):
         raise Exception("Something went wrong! The predicted error vector does not yield the given syndrome.")
-        
+
+    return predicted_e
+
+
+def perform_classical_syndrome_analysis_with_erasure_v2(H, s, E_index_set):
+    #### Sparse-matrix variant of perform_classical_syndrome_analysis_with_erasure.
+    #### Behaves identically to v1: same inputs, same predicted_e output.
+    #### Only difference: the RREF of [H_zeroed | s] is computed by sparse_form
+    #### (list-of-sets GF(2) elimination on a scipy.sparse matrix) rather than
+    #### by standard_form (dense numpy Gaussian elimination).
+
+    if (np.shape(H)[0] != len(s)):
+        raise Exception('The length of the syndrome vector does not match the number of rows of the parity check matrix.')
+
+    num_bits = np.shape(H)[1]
+
+    H_zeroed = H.copy()
+    for bit_index in range(num_bits):
+        if (bit_index not in E_index_set):
+            H_zeroed[:, bit_index] = 0
+
+    H_aug = np.hstack((H_zeroed, s[:, np.newaxis]))
+
+    H_aug_sparse = csr_matrix(H_aug.astype(np.int8))
+    H_aug_rref, A, pivot_indices = sparse_form(H_aug_sparse)
+
+    predicted_e = np.zeros(np.shape(H)[1], dtype=int)
+
+    if H_aug_rref.shape[0] > 0:
+        s_rref = H_aug_rref[:, -1]
+        for i in reversed(range(len(pivot_indices))):
+            pivot_index = pivot_indices[i]
+            # The last column (index num_bits) is the syndrome side; if it
+            # appears as a pivot column the system is inconsistent.
+            if pivot_index == num_bits:
+                raise Exception("Inconsistent system: syndrome column became a pivot.")
+            predicted_e[pivot_index] = s_rref[i]
+
+    if (not np.array_equal(np.dot(H, predicted_e) % 2, s)):
+        raise Exception("Something went wrong! The predicted error vector does not yield the given syndrome.")
+
     return predicted_e
 
 

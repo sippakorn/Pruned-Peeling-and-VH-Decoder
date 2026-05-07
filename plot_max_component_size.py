@@ -30,22 +30,22 @@ def title_from_filename(file_path):
 
 def plot(data, output_file=None, data_file=None):
     # Filter out entries where average is 0 and std is 0 (all trials failed, no data)
-    valid = [d for d in data if d['average_cluster_only_max_component_size'] > 0]
+    # valid = [d for d in data if d['average_cluster_only_max_component_size'] > 0]
 
-    x   = [d['erasure_rate']                          for d in valid]
-    y   = [d['average_cluster_only_max_component_size'] for d in valid]
-    err = [d['std_cluster_only_max_component_size']    for d in valid]
+    # x   = [d['erasure_rate']                          for d in valid]
+    # y   = [d['average_cluster_only_max_component_size'] for d in valid]
+    # err = [d['std_cluster_only_max_component_size']    for d in valid]
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    ax.errorbar(x, y, yerr=err,
-                fmt='o-', capsize=2, capthick=.5,
-                linewidth=.5, markersize=2,
-                label='Mean ± Std dev (Largest component size without peeling)')
+    # ax.errorbar(x, y, yerr=err,
+    #             fmt='o-', capsize=2, capthick=.5,
+    #             linewidth=.5, markersize=2,
+    #             label='Mean ± Std dev (Largest component size without peeling)')
 
-    y_max = [d['max_cluster_only_max_component_size'] for d in valid]
-    ax.plot(x, y_max, 's--', color='red', linewidth=.5, markersize=2,
-            label='Max (Largest component size without peeling)')
+    # y_max = [d['max_cluster_only_max_component_size'] for d in valid]
+    # ax.plot(x, y_max, 's--', color='red', linewidth=.5, markersize=2,
+    #         label='Max (Largest component size without peeling)')
 
     valid_mc = [d for d in data if d['average_max_component_size'] > 0]
     if valid_mc:
