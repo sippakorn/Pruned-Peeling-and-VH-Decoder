@@ -21,12 +21,8 @@ from Hypergraph_Product_Code_Construction_v3 import standard_form
 
 # Import the 3x3 toric code example for simple testing
 from Hypergraph_Product_Code_Construction_v3 import Toric3
-
-from cluster_decoder_v2 import cluster_decoder_v2
-from cluster_decoder_v3 import cluster_decoder_v3
-
-
-
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import reverse_cuthill_mckee
 
 # Function to identify the existence of dangling clusters within a connected component.
 
@@ -545,7 +541,7 @@ def solve_cluster_tree_by_recursive_peeling(HGP_code,
 # Function Outputs:
 # predicted_e_index_set: the index set for the predicted error vector which gives the original syndrome.
 
-def cluster_decoder_vh(HGP_code,E_index_set,s_index_set):
+def cluster_decoder(HGP_code,E_index_set,s_index_set):
     
     # Infer the set of adjacent check indices to the given set of erased qubit indices.
     Ch_index_set = compute_adjacent_check_indices(HGP_code,E_index_set)
@@ -671,7 +667,7 @@ def is_product_of_generators_fully_erased(list_of_generators,index_set):
 # combined_decoder_results_dict: a decoder consolidating the results, if successful (number of dangling checks used, etc.)
 
 
-def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_input,C=None):
+def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_input):
     
     # Initialize some local versions of the input and the predicted error vector to return.
     predicted_e_index_set = set()
@@ -737,7 +733,6 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
     # Finally, initialize a dictionary to be returned at the end with the solution.
     # This dictionary will catalogue the steps used if a successful decoding occurs.
     combined_decoder_results_dict = {}
-    global_max_comp_size = 0
             
     
     while (s_index_set != set()):
@@ -931,10 +926,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
             
             # The cluster decoder is the last method we apply; if it fails, then flag this as a decoding failure.
             try:
-                cluster_decoder_pred_e_index_set = cluster_decoder_v3(HGP_code,E_index_set,s_index_set,C=C)
-                
-                # if (global_max_comp_size < len(cluster_decoder_pred_e_index_set)):
-                #     global_max_comp_size = len(cluster_decoder_pred_e_index_set)
+                cluster_decoder_pred_e_index_set = cluster_decoder(HGP_code,E_index_set,s_index_set)
                 
                 # Confirm that the predicted error vector obtained in this way matches the remaining syndrome.
                 if (HGP_code.Hz_syn_index_set_for_X_err(cluster_decoder_pred_e_index_set) != s_index_set):
@@ -950,8 +942,7 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
                     # Increment the counter for classical stopping sets (those sets not correctable by peeling/generators alone)
                     classical_stopping_sets_used += 1
                 
-            except Exception as e:
-
+            except:
                 raise Exception('Decoding failure: exhausted dangling checks/erased generators and cluster decoder failed.')
                 
     
@@ -960,7 +951,6 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
     combined_decoder_results_dict['entirely_erased_generators_used'] = entirely_erased_generators_used
     combined_decoder_results_dict['entirely_erased_generator_products_used'] = entirely_erased_generator_products_used
     combined_decoder_results_dict['classical_stopping_sets_used'] = classical_stopping_sets_used
-    combined_decoder_results_dict['max_component_size'] = global_max_comp_size
     
     
     # Return the predicted error vector and the dictionary of results.
@@ -984,14 +974,13 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
 # Function Outputs:
 # simulation_results_dict: a dictionary storing the results of the simulation (number of failures, successes, etc.)
 
-def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate,C=None):
+def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate):
     
     # Initialize some variables to track the decoder's performance.
     num_successes_peeling_M0 = 0
     num_successes_peeling_M1 = 0
     num_successes_peeling_M2 = 0
     num_successes_peeling_M2_cluster = 0
-    max_comp_size_list = []
     
     # We make a distinction between "true" decoder failures (where the decoder cannot complete) and logical errors.
     # However, these are both counted as decoder failures when computing the failure rate, and hence combined at the end.
@@ -1021,7 +1010,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
             # Run the decoder using the given erasure pattern and syndrome.
             # We may infer the rseults from the returned dictionary.
             predicted_e_index_set, combined_decoder_results_dict = combined_peeling_and_cluster_decoder(
-                HGP_code,E_index_set,s_index_set,C=C)
+                HGP_code,E_index_set,s_index_set)
             
             # The total error is the symmetric difference of the original and predicted errors.
             total_e_index_set = e_index_set.symmetric_difference(predicted_e_index_set)
@@ -1057,9 +1046,6 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
                     num_successes_peeling_M2 += 1
                     num_successes_peeling_M1 += 1
                     num_successes_peeling_M0 += 1
-            
-            if (combined_decoder_results_dict['max_component_size'] > 0):
-                max_comp_size_list.append(combined_decoder_results_dict['max_component_size'])
                     
         except:
             # If the decoder failed to predict an error, this is a true decoding failure.
@@ -1089,12 +1075,6 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     simulation_results_dict['failure_rate_peeling_M2'] = ((num_iterations - num_successes_peeling_M2)/float(num_iterations))
     simulation_results_dict['failure_rate_peeling_M2_cluster'] = (
         (num_iterations - num_successes_peeling_M2_cluster)/float(num_iterations))
-    
-    #print(max_comp_size_list)
-    simulation_results_dict['max_max_component_size'] = max(max_comp_size_list) if max_comp_size_list else 0
-    simulation_results_dict['average_max_component_size'] = sum(max_comp_size_list)/float(len(max_comp_size_list)) if max_comp_size_list else 0.0
-    simulation_results_dict['std_max_component_size'] = (sum([(x - simulation_results_dict['average_max_component_size'])**2 for x in max_comp_size_list])/float(len(max_comp_size_list)))**0.5 if max_comp_size_list else 0.0
-    
             
     # Return the number of decoding failures, logical errors, and decoding successes.
     return simulation_results_dict
@@ -1114,7 +1094,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
 # Function Outputs:
 # list_of_decoder_performance_dicts: a list of dictionaries tracking the decoder's performance at different error rates.
 
-def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0.35):
+def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0):
     
     # Initialize a dictionary to store the performance information for this code.
     list_of_decoder_performance_dicts = []
@@ -1199,43 +1179,205 @@ def write_list_of_performance_dictionaries_to_file(HGP_code,list_of_perf_dicts,A
     # Return the string specifying the file name.
     return file_name
 
+def gf2_rank(A):
+    """Compute the rank of matrix A over GF(2) using Gaussian elimination."""
+    gf2_matrix = A.copy() % 2
+    rank = 0
+    pivot_row = 0
+    for col in range(gf2_matrix.shape[1]):
+        pivot = None
+        for row in range(pivot_row, gf2_matrix.shape[0]):
+            if gf2_matrix[row, col] == 1:
+                pivot = row
+                break
+        if pivot is None:
+            continue
+        gf2_matrix[[pivot_row, pivot]] = gf2_matrix[[pivot, pivot_row]]
+        for row in range(gf2_matrix.shape[0]):
+            if row != pivot_row and gf2_matrix[row, col] == 1:
+                gf2_matrix[row] = (gf2_matrix[row] + gf2_matrix[pivot_row]) % 2
+        pivot_row += 1
+        rank += 1
+    return rank
 
 
+def peel_matrix(H):
+    # Perform peeling decoding on the matrix H
+    # first compute the number of variables adjacent to a contraint
+    num_rows, num_cols = H.shape
+    vcount = { c : 0 for c in range(num_rows)}
+
+    removed_rows = set()
+    removed_var = set()
+
+    dangling_checks = set()
+    check_vars = { c : set() for c in range(num_rows)}
+    for i in range(num_rows):
+        for j in range(num_cols):
+            if H[i, j]:
+                vcount[i] += 1
+                if vcount[i] == 1:
+                    dangling_checks.add(i)
+                else:
+                    dangling_checks.discard(i)
+                check_vars[i].add(j)
+
+    while len(dangling_checks) > 0:
+        c = dangling_checks.pop()
+        removed_rows.add(c)
+        if len(check_vars[c]) == 0:
+            continue
+        j = check_vars[c].pop()
+        removed_var.add(j)
+        for i in range(num_rows):
+            if (i not in removed_rows) and (H[i, j]):
+                vcount[i] -= 1
+                check_vars[i].discard(j)
+                if vcount[i] == 1:
+                    dangling_checks.add(i)
+
+    # Return the pruned matrix
+    return H[~np.isin(np.arange(num_rows), list(removed_rows)), :][:, ~np.isin(np.arange(num_cols), list(removed_var))]
+
+
+def dfs_reorder(H):
+    import networkx as nx
+
+    # build bipartite Tanner graph from H, using NetworkX graph representation
+    # each variable (column) becomes a node, each constraint (row) is also a node;
+    num_rows, num_cols = H.shape
+    G = nx.Graph()
+    # Add variable nodes (columns) and check nodes (rows) with distinct labels
+    var_nodes = [('v', j) for j in range(num_cols)]
+    chk_nodes = [('c', i) for i in range(num_rows)]
+    G.add_nodes_from(var_nodes)
+    G.add_nodes_from(chk_nodes)
+    # Add edges wherever H[i, j] == 1
+    for i in range(num_rows):
+        for j in range(num_cols):
+            if H[i, j]:
+                G.add_edge(('c', i), ('v', j))
+
+
+    # Compute a DFS ordering of the variable nodes
+    dfs_ordering = list(nx.dfs_postorder_nodes(G))
+
+    var_ordering = [node[1] for node in dfs_ordering if node[0] == 'v']
+    cons_ordering = [node[1] for node in dfs_ordering if node[0] == 'c']
+    
+    row_dfs_ordering = True
+
+    if row_dfs_ordering:
+        H_reordered = H[np.ix_(cons_ordering, var_ordering)]
+    else:
+        # order rows by indices of its first non-zero column
+        cons_ordering = range(num_rows)
+        H2 = H[np.ix_(cons_ordering, var_ordering)]
+
+        first_col = []
+        for i in range(num_rows):
+            mn = num_rows+100
+            for j in range(num_cols):
+                if H2[i, j]:
+                    mn = j
+                    break
+            first_col.append((mn, i))
+
+        first_col.sort()
+        new_row_order = [row for _, row in first_col]
+        H_reordered = H2[np.ix_(new_row_order, range(num_cols))]
+
+    return H_reordered
+
+    
 def main():
 
-    print("Hello, world!")
-    
     # 3x3 toric code, used for running small tests.
     #Toric3_sample_performance_dictionary = run_combined_peeling_cluster_decoder_varying_erasure_rate(Toric3,0.32,16,100)
     #write_list_of_performance_dictionaries_to_file(Toric3,Toric3_sample_performance_dictionary,False,file_name='Toric3_sample_data')
     #print(Toric3_sample_performance_dictionary[-1])
 
-    # fix a number of trials to run
-    num_trials = 100
-
     # 625 qubit PEG code
-    C_625 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')
-    C_625_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_625,0.9,55,num_trials)
+    #C_625 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')
+    #print(C_625.Hx.shape)
 
-    #write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=False)
-    write_list_of_performance_dictionaries_to_file(C_625,C_625_perf_dict_list,ArrayJob=True)
+    C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
 
-    # # 1225 qubit PEG code
-    # C_1225 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1225_k65_classicalH.txt')
-    # C_1225_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1225,0.32,16,num_trials)
-    # write_list_of_performance_dictionaries_to_file(C_1225,C_1225_perf_dict_list,ArrayJob=True)
+    code = C_1225
 
-    # # 1600 qubit PEG code
-    # C_1600 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')
-    # C_1600_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_1600,0.32,16,num_trials)
-    # write_list_of_performance_dictionaries_to_file(C_1600,C_1600_perf_dict_list,ArrayJob=True)
+    import matplotlib.pyplot as plt
 
-    # 2025 qubit PEG code
-    # C_2025 = construct_HGP_code_from_classical_H_text_file('PEG_HGP_code_(3,4)_family_n2025_k81_classicalH.txt')
-    # C_2025_perf_dict_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(C_2025,0.9,90,num_trials)
-    # write_list_of_performance_dictionaries_to_file(C_2025,C_2025_perf_dict_list,ArrayJob=True)
+    show_original_matrix = True
+    show_sampled_matrix = False
+    show_cuthill_mckee = False
+    show_eigenvalue_gap_analysis = False
+    show_dfs_ordering = True
 
-
+    if show_original_matrix:
+        plt.figure(figsize=(8, 6))
+        plt.imshow(code.Hx, cmap='Greys', interpolation='nearest', aspect='auto')
+        plt.xlabel('column')
+        plt.ylabel('row')
+        plt.title('code.Hx')
+        plt.colorbar(label='value')
+        plt.tight_layout()
+        plt.savefig('code_original.png', dpi=200)
+        plt.show()
     
+    erasure_prob = 0.4
+
+    # Sample each column with probability erasure_prob and keep sampled columns in sHx
+    num_cols = code.Hx.shape[1]
+    col_mask = (np.random.rand(num_cols) < erasure_prob)
+    sampled_col_indices = np.nonzero(col_mask)[0]
+    sHx = code.Hx[:, sampled_col_indices].copy()
+    print(sHx.shape)
+
+    sHx = peel_matrix(sHx)
+    print(sHx.shape)
+
+    #print(f"Sampled {len(sampled_col_indices)}/{num_cols} columns into sHx.")
+
+    if show_dfs_ordering:
+        Hx_reordered = dfs_reorder(sHx)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(Hx_reordered, cmap='Greys', interpolation='nearest', aspect='auto')
+        plt.xlabel('column')
+        plt.ylabel('row')
+        plt.title(f'code.Hx (DFS reordered), rate {erasure_prob}')
+        plt.colorbar(label='value')
+        plt.tight_layout()
+        plt.savefig('code_cuthill_mckee.png', dpi=200)
+        plt.show()
+
+    if show_cuthill_mckee:
+        # Apply Cuthill-McKee algorithm to reorder sHx
+
+        # Convert Hx to a sparse matrix
+        Hx_sparse = csr_matrix(sHx)
+
+        # Compute the adjacency matrix (symmetric) from Hx: A = Hx * Hx^T gives row-row adjacency
+        adjacency = Hx_sparse @ Hx_sparse.T
+
+        # Apply Reverse Cuthill-McKee to get row permutation
+        row_perm = reverse_cuthill_mckee(csr_matrix(adjacency), symmetric_mode=True)
+
+        # Similarly compute column-column adjacency: A = Hx^T * Hx
+        col_adjacency = Hx_sparse.T @ Hx_sparse
+        col_perm = reverse_cuthill_mckee(csr_matrix(col_adjacency), symmetric_mode=True)
+
+        # Reorder the matrix using the permutations
+        Hx_reordered = sHx[np.ix_(row_perm, col_perm)]
+
+        plt.figure(figsize=(8, 6))
+        plt.imshow(Hx_reordered, cmap='Greys', interpolation='nearest', aspect='auto')
+        plt.xlabel('column')
+        plt.ylabel('row')
+        plt.title('code.Hx (Cuthill–McKee reordered)')
+        plt.colorbar(label='value')
+        plt.tight_layout()
+        plt.savefig('code_cuthill_mckee.png', dpi=200)
+        plt.show()
+
 
 main()
