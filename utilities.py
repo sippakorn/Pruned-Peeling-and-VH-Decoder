@@ -1,10 +1,62 @@
 import numpy as np
 import random
+import time
 from itertools import chain, combinations
 #import matplotlib.pyplot as plt
 
 from Hypergraph_Product_Code_Construction_v3 import HGP_code
 from Hypergraph_Product_Code_Construction_v3 import standard_form
+
+
+# ---------------------------------------------------------------------------
+# Solver configuration and instrumentation.
+#
+# The per-cluster classical solve (perform_classical_syndrome_analysis_with_erasure)
+# is the Gaussian-elimination hot path of the decoder. To compare the original
+# dense GF(2) GE against a custom sparse GF(2) GE (and against a DFS-reordered
+# variant), the backend choice is routed through this module-level config rather
+# than threaded through the deep cluster-decoder call chain.
+#
+#   SOLVER_CONFIG["backend"]:  "dense" (original) or "sparse" (custom GF(2) GE)
+#   SOLVER_CONFIG["reorder"]:  None (natural column order) or "dfs"
+#
+# Default reproduces the original dense behavior exactly.
+# ---------------------------------------------------------------------------
+
+SOLVER_CONFIG = {"backend": "dense", "reorder": None}
+
+# Aggregated GE instrumentation, reset per simulation trial by the harness.
+SOLVER_STATS = {
+    "ge_calls": 0,        # number of per-cluster GE solves attempted
+    "ge_time": 0.0,       # cumulative time in GE solves, EXCLUDING DFS reordering (seconds)
+    "reorder_time": 0.0,  # cumulative time spent computing the DFS column ordering (seconds)
+    "total_rows": 0,      # cumulative number of check-rows passed to GE
+    "total_cols": 0,      # cumulative number of erased columns passed to GE
+}
+
+
+def set_solver_config(backend="dense", reorder=None):
+    """Set the classical-solve backend and reorder strategy for the decoder."""
+    if backend not in ("dense", "sparse"):
+        raise ValueError("backend must be 'dense' or 'sparse'.")
+    if reorder not in (None, "dfs"):
+        raise ValueError("reorder must be None or 'dfs'.")
+    SOLVER_CONFIG["backend"] = backend
+    SOLVER_CONFIG["reorder"] = reorder
+
+
+def reset_solver_stats():
+    """Zero the GE instrumentation counters (call once per trial)."""
+    SOLVER_STATS["ge_calls"] = 0
+    SOLVER_STATS["ge_time"] = 0.0
+    SOLVER_STATS["reorder_time"] = 0.0
+    SOLVER_STATS["total_rows"] = 0
+    SOLVER_STATS["total_cols"] = 0
+
+
+def snapshot_solver_stats():
+    """Return a copy of the current GE instrumentation counters."""
+    return dict(SOLVER_STATS)
 
 
 # Functions to convert between the 1-dimensional and 2-dimensional indexing used in the HGP code construction.
@@ -940,17 +992,55 @@ def compute_list_of_shared_checks_per_cluster_and_vice_versa(HGP_code,list_of_E_
 
 def perform_classical_syndrome_analysis_with_erasure(H,s,E_index_set):
     
-    # DEBUG
-    #print("Original parity check matrix, syndrome vector, and erasure index set:")
-    #print("H = ")
-    #print(H)
-    #print("s = ",s)
-    #print("E_index_set = ",E_index_set)
-    
     # Verify that the length of the syndrome vector matches the number of rows in the parity check matrix.
     if (np.shape(H)[0] != len(s)):
         raise Exception('The length of the syndrome vector does not match the number of rows of the parity check matrix.')
+    
+    # Record the problem size for instrumentation, then dispatch to the configured backend.
+    SOLVER_STATS["ge_calls"] += 1
+    SOLVER_STATS["total_rows"] += int(np.shape(H)[0])
+    SOLVER_STATS["total_cols"] += len(E_index_set)
+    
+    backend = SOLVER_CONFIG["backend"]
+    reorder = SOLVER_CONFIG["reorder"]
+    
+    # The sparse solver accumulates any DFS-reordering time into SOLVER_STATS["reorder_time"].
+    # We capture its value before/after the call so that the reordering cost can be excluded
+    # from the reported GE (elimination) time, giving an apple-to-apple elimination comparison.
+    reorder_time_before = SOLVER_STATS["reorder_time"]
+    start_time = time.perf_counter()
+    try:
+        if (backend == "sparse"):
+            predicted_e = _sparse_solve_classical_syndrome_with_erasure(H, s, E_index_set, reorder=reorder)
+        else:
+            predicted_e = _dense_solve_classical_syndrome_with_erasure(H, s, E_index_set, reorder=reorder)
+    finally:
+        # Always record elapsed time, even when a solve raises (inconsistent system).
+        # Subtract this call's reordering time so ge_time measures elimination only.
+        elapsed = time.perf_counter() - start_time
+        this_call_reorder_time = SOLVER_STATS["reorder_time"] - reorder_time_before
+        SOLVER_STATS["ge_time"] += (elapsed - this_call_reorder_time)
+    
+    # This should always yield a solution, but if something is wrong, flag this.
+    if (not np.array_equal(np.dot(H,predicted_e)%2,s)):
+        raise Exception("Something went wrong! The predicted error vector does not yield the given syndrome.")
         
+    return predicted_e
+
+
+
+# Dense GF(2) Gaussian-elimination solve.
+# Zeroes non-erased columns, augments with the syndrome, computes RREF via the
+# dense standard_form routine, and reads off the minimum-weight solution.
+#
+# With reorder=None this is the original (unchanged) behavior. With reorder="dfs"
+# the columns of the augmented matrix are permuted into DFS order before standard_form,
+# so the dense solver chooses pivots in the same DFS column order the sparse path uses.
+# The DFS-ordering cost is timed separately (SOLVER_STATS["reorder_time"]) so it can be
+# excluded from the reported GE (elimination) time.
+
+def _dense_solve_classical_syndrome_with_erasure(H,s,E_index_set,reorder=None):
+    
     # Infer the number of bits from the number of columns of the parity check matrix.
     num_bits = np.shape(H)[1]
     
@@ -959,57 +1049,198 @@ def perform_classical_syndrome_analysis_with_erasure(H,s,E_index_set):
     for bit_index in range(num_bits):
         if (bit_index not in E_index_set):
             H_zeroed[:,bit_index] = 0
-            
-    # DEBUG
-    #print("H_zeroed matrix after zeroing columns of H corresponding to non-erased bits:")
-    #print(H_zeroed)
         
     # Construct the augmented matrix [H|s] corresponding to this system of equations.
     H_aug = np.hstack((H_zeroed,s[:,np.newaxis]))
     
-    # DEBUG:
-    #print("Augmented matrix:")
-    #print(H_aug)
+    if (reorder == "dfs"):
+        # Compute a DFS column ordering and a corresponding permutation of the augmented
+        # matrix columns. The syndrome column (index num_bits) is kept LAST so that a pivot
+        # there still signals an inconsistent system (handled exactly as in the natural-order case).
+        # This reordering is timed separately and excluded from the GE (elimination) time.
+        reorder_start_time = time.perf_counter()
+        erased_cols_set = set(c for c in E_index_set if (0 <= c < num_bits))
+        dfs_cols = dfs_order(H, erased_cols_set)
+        dfs_cols_set = set(dfs_cols)
+        other_cols = [j for j in range(num_bits) if j not in dfs_cols_set]
+        perm = dfs_cols + other_cols + [num_bits]
+        SOLVER_STATS["reorder_time"] += (time.perf_counter() - reorder_start_time)
+        
+        # Apply the permutation and run the dense RREF; pivots are now chosen in DFS order.
+        H_aug = H_aug[:, perm]
+        H_aug_rref, A, pivot_indices = standard_form(H_aug)
+        s_rref = H_aug_rref[:,-1]
+        
+        # Map pivot columns (in permuted space) back to original column indices.
+        # If the syndrome column (original index num_bits) is a pivot, the system is
+        # inconsistent and predicted_e[num_bits] raises IndexError (caught upstream).
+        predicted_e = np.zeros(num_bits,dtype=int)
+        for i in reversed(range(len(pivot_indices))):
+            original_col = perm[pivot_indices[i]]
+            predicted_e[original_col] = s_rref[i]
+        return predicted_e
     
+    # Natural column order (original behavior).
     # Place this augmented matrix into Reduced Row Echelon Form over GF(2).
     H_aug_rref, A, pivot_indices = standard_form(H_aug)
     
-    # DEBUG
-    #print("Augmented RREF:")
-    #print(H_aug_rref)
-    #print("Pivot column indices:",pivot_indices)
-    
     # Split this augmented RREF matrix into the component from H and the vector from s.
-    H_rref = H_aug_rref[:,:-1]
     s_rref = H_aug_rref[:,-1]
     
-    # DEBUG:
-    #print("H_rref:")
-    #print(H_rref)
-    #print("s_rref",s_rref)
-    
     # Every non-pivot entry is a free variable.
-    # To choose a solution of minimal weight, we will just assume that all pivot variables are 0. (is it really that simple?)
-    # Do this by initializing a 0-vector of the appropriate length, and looping backwards through the variables.
+    # To choose a solution of minimal weight, we assume that all free variables are 0.
     # Then just assign the pivot indices to match the corresponding syndrome values.
-    predicted_e = np.zeros(np.shape(H)[1],dtype=int)
+    # NOTE: if the augmented column (index num_bits) is a pivot, the system is inconsistent;
+    # the assignment below then raises an IndexError, which the caller treats as "no solution".
+    predicted_e = np.zeros(num_bits,dtype=int)
     for i in reversed(range(len(pivot_indices))):
         pivot_index = pivot_indices[i]
         predicted_e[pivot_index] = s_rref[i]
         
-    # DEBUG
-    #print("Predicted error vector:",predicted_e)
+    return predicted_e
+
+
+
+# Custom sparse GF(2) Gaussian elimination over a list-of-sets representation.
+#
+# Each equation (row) is stored as a Python set of the column indices where it
+# has a 1; over GF(2), adding two rows is the symmetric difference of their sets.
+# The augmented syndrome column is represented by the sentinel index num_bits.
+# Non-erased columns are simply never inserted (equivalent to zeroing them).
+#
+# Reduced row echelon form has a UNIQUE set of pivot columns and a unique reduced
+# augmented column for a fixed column-visitation order, so with the natural
+# (increasing) column order this returns exactly the same minimum-weight solution
+# as the dense backend. With reorder="dfs" the column-visitation order changes,
+# which changes which columns become pivots and hence which particular solution
+# of minimal weight is selected.
+
+def _sparse_solve_classical_syndrome_with_erasure(H,s,E_index_set,reorder=None):
     
-    # DEBUG
-    #print("Check that the predicted error vector matches the input syndrome: H*v =? s")
-    #print("H*v:",np.dot(H,predicted_e)%2)
-    #print("s:",s)
+    num_rows = np.shape(H)[0]
+    num_bits = np.shape(H)[1]
+    aug_col = num_bits   # sentinel column index representing the syndrome
     
-    # This should always yield a solution, but if I messed up and it doesn't, flag this.
-    if (not np.array_equal(np.dot(H,predicted_e)%2,s)):
-        raise Exception("Something went wrong! The predicted error vector does not yield the given syndrome.")
+    # Restrict to erased columns that are valid indices for this matrix.
+    erased_cols = [c for c in E_index_set if (0 <= c < num_bits)]
+    
+    # Build the augmented rows as sets of column indices.
+    erased_cols_set = set(erased_cols)
+    rows = []
+    for r in range(num_rows):
+        row_set = set()
+        H_row = H[r]
+        for c in erased_cols_set:
+            if H_row[c]:
+                row_set.add(int(c))
+        if s[r]:
+            row_set.add(aug_col)
+        rows.append(row_set)
+    
+    # Determine the order in which columns are considered as pivot candidates.
+    if (reorder == "dfs"):
+        # Time the reordering separately so it can be excluded from the GE (elimination) time.
+        reorder_start_time = time.perf_counter()
+        col_order = dfs_order(H, erased_cols_set)
+        SOLVER_STATS["reorder_time"] += (time.perf_counter() - reorder_start_time)
+    else:
+        # Natural increasing order reproduces the dense RREF exactly.
+        col_order = sorted(erased_cols)
+    
+    # Append the augmented column last: if it ever becomes a pivot the system is inconsistent.
+    candidate_cols = list(col_order) + [aug_col]
+    
+    available_rows = list(range(num_rows))
+    pivot_row_sets = {}        # pivot column -> reference to its (mutating) row set
+    pivot_cols_in_order = []   # pivot columns in the order they were selected
+    
+    for j in candidate_cols:
+        # Find the first still-available row that contains column j.
+        pivot_row_index = None
+        for idx in available_rows:
+            if (j in rows[idx]):
+                pivot_row_index = idx
+                break
+        
+        # If no available row contains this column, it is a free variable; skip it.
+        if (pivot_row_index is None):
+            continue
+        
+        # A pivot in the augmented column means a "0 = 1" equation: inconsistent system.
+        if (j == aug_col):
+            raise ValueError("Inconsistent classical system; no solution exists for this syndrome.")
+        
+        # Promote this row to a pivot row for column j and fully eliminate column j elsewhere.
+        available_rows.remove(pivot_row_index)
+        pivot_set = rows[pivot_row_index]
+        for idx in range(num_rows):
+            if (idx != pivot_row_index) and (j in rows[idx]):
+                rows[idx] ^= pivot_set   # in-place GF(2) row addition (symmetric difference)
+        
+        pivot_row_sets[j] = pivot_set
+        pivot_cols_in_order.append(j)
+    
+    # The minimum-weight solution sets every free variable to 0; each pivot variable
+    # takes the (reduced) value of the augmented column in its pivot row.
+    predicted_e = np.zeros(num_bits,dtype=int)
+    for j in pivot_cols_in_order:
+        if (aug_col in pivot_row_sets[j]):
+            predicted_e[j] = 1
         
     return predicted_e
+
+
+
+# Depth-first-search ordering of the erased columns of a local cluster matrix.
+#
+# Builds the bipartite Tanner subgraph induced by the erased columns and the
+# check rows that touch them, then performs DFS over the columns (two columns are
+# neighbors when they share a check). The returned visitation order is used as the
+# pivot-selection order for the sparse GE solve. Reordering this way tends to keep
+# eliminations local along the graph, reducing fill-in for sparse elimination.
+
+def dfs_order(H,E_index_set):
+    
+    num_rows = np.shape(H)[0]
+    num_bits = np.shape(H)[1]
+    
+    # Sort for deterministic behavior across runs.
+    erased_cols = sorted(c for c in E_index_set if (0 <= c < num_bits))
+    
+    # Build column<->row adjacency restricted to the erased columns.
+    col_to_rows = {c: set() for c in erased_cols}
+    row_to_cols = {}
+    for c in erased_cols:
+        H_col = H[:, c]
+        for r in range(num_rows):
+            if H_col[r]:
+                col_to_rows[c].add(r)
+                row_to_cols.setdefault(r, set()).add(c)
+    
+    visited_cols = set()
+    order = []
+    
+    # Iterate over a deterministic list of start columns to also cover disconnected pieces.
+    for start_col in erased_cols:
+        if (start_col in visited_cols):
+            continue
+        stack = [start_col]
+        while stack:
+            c = stack.pop()
+            if (c in visited_cols):
+                continue
+            visited_cols.add(c)
+            order.append(c)
+            # Gather columns adjacent to c (sharing at least one check).
+            neighbor_cols = set()
+            for r in col_to_rows[c]:
+                neighbor_cols |= row_to_cols[r]
+            # Push neighbors in reverse-sorted order so the smallest index is explored first.
+            for nc in sorted(neighbor_cols, reverse=True):
+                if (nc not in visited_cols):
+                    stack.append(nc)
+    
+    return order
 
 
 

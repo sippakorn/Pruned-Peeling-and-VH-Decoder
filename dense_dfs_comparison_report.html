@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PPVH Decoder: Dense vs Dense+DFS comparison</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: #57606a; margin: 0 0 18px; font-size: 14px; }
+  .note { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px;
+          padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+            padding: 18px 20px; margin: 0 0 22px; }
+  h2 { font-size: 19px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 16px 0 8px; color: #424a53; }
+  .muted { color: #8b949e; font-weight: 400; font-size: 14px; }
+  .charts { display: flex; flex-wrap: wrap; gap: 18px; }
+  .chartbox { flex: 1 1 320px; min-width: 300px; }
+  .chartbox h4 { font-size: 13.5px; margin: 0 0 6px; text-align: center; color: #1f2328; }
+  canvas { width: 100%; height: 280px; display: block; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin: 6px 0 0; font-size: 12.5px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 6px; }
+  th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; }
+  th { background: #f6f8fa; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Dense GE vs Dense GE + DFS reorder</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). 1000 trials per erasure rate, fixed RNG seed so both conditions decode the <strong>identical</strong> erasure/error samples. No sparse GE is used in this experiment.</p>
+  <div class="note">
+    This isolates the effect of <strong>DFS reordering on the original dense solver</strong>. <strong>GE time is elimination only</strong> &mdash; the DFS reordering cost is measured separately, shown in its own chart and the summary table, and <strong>excluded</strong> from the GE-time chart.
+    Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).
+  </div>
+  <div id="sections"></div>
+</div>
+
+<script>
+const X = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12000000000000001, 0.14, 0.16, 0.18, 0.19999999999999998, 0.21999999999999997, 0.23999999999999996, 0.25999999999999995, 0.27999999999999997, 0.3, 0.32];
+const TRIALS = 1000;
+const DATA = {"Toric3": {"dense": {"fr": [0.0, 0.0, 0.0, 0.002, 0.0, 0.005, 0.006, 0.018, 0.02, 0.046, 0.039, 0.063, 0.083, 0.11, 0.123, 0.166], "ge": [0.0, 0.0, 0.0, 0.00018628700127010234, 0.0001818630007619504, 0.0006561219997820444, 0.0010398949998489115, 0.0014579639973817393, 0.0018252329973620363, 0.0023945159919094294, 0.0020372080125525827, 0.003137146004519309, 0.0035439349885564297, 0.005354755996449967, 0.005353551008738577, 0.00679208800647757], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.0002507305970066227, 0.000266600629003733, 0.00026161912399038555, 0.0002584752109960391, 0.0002692324750096304, 0.00026585808497293326, 0.000277876851041583, 0.00028213725799469105, 0.00028913779400318164, 0.0002980435400022543, 0.000293665277042237, 0.00029960859097081995, 0.0003049372260193195, 0.0003191218839638168, 0.0003177667170202767, 0.0003288847540152346]}, "dense_dfs": {"fr": [0.0, 0.0, 0.0, 0.002, 0.0, 0.005, 0.006, 0.018, 0.02, 0.046, 0.039, 0.063, 0.083, 0.11, 0.123, 0.166], "ge": [0.0, 0.0, 0.0, 0.000232229000175721, 0.00018220199854113162, 0.0007390190021396847, 0.0011420080008974764, 0.001449399003831786, 0.0017202119961439166, 0.0024752439949224936, 0.0022025859962013783, 0.0033831440032372484, 0.004219728985844995, 0.005366678989958018, 0.005993418002617545, 0.00735094201809261], "re": [0.0, 0.0, 0.0, 3.997000021627173e-05, 2.868000046873931e-05, 0.00011772199468396138, 0.00020000200129288714, 0.00025685599393909797, 0.0003116550033155363, 0.0004621999978553504, 0.0003995160004706122, 0.0006461970006057527, 0.0007989080113475211, 0.0010864060059248004, 0.001193522997709806, 0.0014957999919715803], "dt": [0.0002406985679990612, 0.0002479374789909343, 0.0002500403430058213, 0.0002575664779960789, 0.00026144089499757685, 0.00026968725400001856, 0.00026605417600876534, 0.0002718899970168422, 0.0002800664489368501, 0.00028177002495431225, 0.0002850555660188547, 0.00029081651398337274, 0.00030993867503093496, 0.0003034982359949936, 0.00031010220698226475, 0.0003184788269954879]}}, "C_625": {"dense": {"fr": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.003, 0.0, 0.003, 0.007, 0.011, 0.027, 0.048], "ge": [0.0, 0.0, 0.0, 0.0, 0.0, 0.00015999000061128754, 0.00032825000198499765, 0.00034143199991376605, 0.0009826880050241016, 0.0016221980022237403, 0.0018993120011145948, 0.006766753002011683, 0.01083499801097787, 0.020221394010150107, 0.034976373999597854, 0.04739379598140658], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.01401087389498025, 0.015545733668019238, 0.01663777719900645, 0.01835210467702018, 0.01957122888395497, 0.02098969791303716, 0.022557952251019742, 0.023872285989016747, 0.02526160649799567, 0.026951180550999196, 0.028341487620004047, 0.029744893648998186, 0.03129439972399632, 0.032683468546001675, 0.034155278248004836, 0.03570785291901484]}, "dense_dfs": {"fr": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.004, 0.007, 0.01, 0.027, 0.047], "ge": [0.0, 0.0, 0.0, 0.0, 0.0, 0.00016625699936412275, 0.00041082899952016305, 0.0003360330028954195, 0.0010476440020283917, 0.0021975609997753054, 0.0018925240037788171, 0.0071323890042549465, 0.011003683017406729, 0.020886708998659742, 0.03684937302568869, 0.05519373799143068], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 2.844300070137251e-05, 8.191800043277908e-05, 5.4750998970121145e-05, 0.00018582199663796928, 0.0003616169979068218, 0.00031477799711865373, 0.00127335299475817, 0.0020648769877880113, 0.004110574000151246, 0.007134091976695345, 0.010536413008594536], "dt": [0.014250435359006587, 0.015389560406019883, 0.01723673575000248, 0.018065783175989055, 0.019584901469992474, 0.021037485417953576, 0.022279759083954558, 0.023881992899981924, 0.025313626715958888, 0.027034109977978005, 0.028174293584006593, 0.029685491008993266, 0.03117879411004469, 0.03261532363899641, 0.03454676662399834, 0.037398071652]}}};
+
+const CONDS = [
+  ["dense", "Dense GF(2) GE", "#1f6feb"],
+  ["dense_dfs", "Dense GF(2) GE + DFS", "#d1242f"]
+];
+const CODES = [["Toric3", "18 qubits"], ["C_625", "625 qubits"]];
+
+function metricSeries(code, metric) {
+  const scale = (metric === "fr") ? 1.0 : 1000.0; // times: seconds -> ms
+  const out = [];
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    out.push({ color, pts: X.map((x, i) => [x, DATA[code][cond][metric][i] * scale]) });
+  }
+  return out;
+}
+
+function drawChart(canvas, series) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const mL = 54, mR = 12, mT = 12, mB = 34;
+  const pw = cssW - mL - mR, ph = cssH - mT - mB;
+  let yMax = 0;
+  series.forEach(s => s.pts.forEach(p => { if (p[1] > yMax) yMax = p[1]; }));
+  if (yMax <= 0) yMax = 1;
+  yMax *= 1.12;
+  const xMin = X[0], xMax = X[X.length - 1];
+  const sx = x => mL + (x - xMin) / (xMax - xMin) * pw;
+  const sy = y => mT + ph - (y / yMax) * ph;
+  ctx.strokeStyle = "#d0d7de"; ctx.lineWidth = 1; ctx.strokeRect(mL, mT, pw, ph);
+  ctx.font = "10px -apple-system, Segoe UI, sans-serif";
+  const yticks = 5;
+  for (let i = 0; i <= yticks; i++) {
+    const yv = yMax * i / yticks, py = sy(yv);
+    ctx.strokeStyle = "#eef1f4"; ctx.beginPath(); ctx.moveTo(mL, py); ctx.lineTo(mL + pw, py); ctx.stroke();
+    ctx.fillStyle = "#57606a"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(yv < 1 ? yv.toPrecision(2) : yv.toPrecision(3), mL - 5, py);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  X.forEach((xv, i) => { if (i % 2 === 0) { ctx.fillStyle = "#57606a"; ctx.fillText(xv.toFixed(2), sx(xv), mT + ph + 6); } });
+  ctx.fillStyle = "#424a53"; ctx.fillText("Erasure rate", mL + pw / 2, mT + ph + 19);
+  series.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    s.pts.forEach((p, i) => { const px = sx(p[0]), py = sy(p[1]); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    s.pts.forEach(p => { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 2.4, 0, Math.PI * 2); ctx.fill(); });
+  });
+}
+
+function summaryTable(code) {
+  const last = X.length - 1;
+  const baseGe = DATA[code]["dense"] ? DATA[code]["dense"].ge[last] : null;
+  let rows = "";
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    const d = DATA[code][cond];
+    const ge = d.ge[last];
+    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
+    rows += "<tr>" +
+      "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
+      "<td>" + d.fr[last].toFixed(4) + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
+      "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
+      "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
+      "</tr>";
+  }
+  return "<table><thead><tr><th>Condition</th><th>Failure rate (full decoder)</th>" +
+    "<th>GE time / elimination only (ms)</th><th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
+    rows + "</tbody></table>";
+}
+
+function legendHtml() {
+  return "<div class='legend'>" + CONDS.map(([c, label, color]) =>
+    "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
+}
+
+function render() {
+  const container = document.getElementById("sections");
+  container.innerHTML = "";
+  for (const [code, qubits] of CODES) {
+    if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
+    const sec = document.createElement("section");
+    sec.innerHTML =
+      "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
+      legendHtml() +
+      "<div class='charts'>" +
+        "<div class='chartbox'><h4>Failure rate vs erasure rate</h4><canvas data-code='" + code + "' data-metric='fr'></canvas></div>" +
+        "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
+        "<div class='chartbox'><h4>DFS reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
+      "</div>" +
+      "<h3>At the maximum erasure rate (" + X[X.length - 1].toFixed(2) + ")</h3>" +
+      summaryTable(code);
+    container.appendChild(sec);
+  }
+  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, metricSeries(cv.dataset.code, cv.dataset.metric)));
+}
+
+window.addEventListener("load", render);
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>

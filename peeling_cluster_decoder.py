@@ -5,8 +5,11 @@ import math
 import ast
 import sys
 import os
+import time
 from datetime import date
 
+import utilities
+from utilities import set_solver_config, reset_solver_stats, snapshot_solver_stats
 from utilities import index_to_biindex, biindex_to_index
 from utilities import generate_random_erasure_and_error_index_sets
 from utilities import compute_adjacency_list, convert_adjacency_list_to_binary_matrix
@@ -975,7 +978,13 @@ def combined_peeling_and_cluster_decoder(HGP_code,E_index_set_input,s_index_set_
 # Function Outputs:
 # simulation_results_dict: a dictionary storing the results of the simulation (number of failures, successes, etc.)
 
-def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate):
+def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate,seed=None):
+    
+    # Optionally seed the RNGs so that different solver backends (dense / sparse /
+    # sparse+DFS) are compared on exactly the same random erasure/error samples.
+    if (seed is not None):
+        random.seed(seed)
+        np.random.seed(seed)
     
     # Initialize some variables to track the decoder's performance.
     num_successes_peeling_M0 = 0
@@ -987,6 +996,12 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     # However, these are both counted as decoder failures when computing the failure rate, and hence combined at the end.
     num_true_decoding_failures = 0
     num_non_trivial_logical_errors = 0
+    
+    # Instrumentation: cumulative wall-clock decode time and Gaussian-elimination statistics.
+    total_decode_time = 0.0
+    total_ge_time = 0.0          # elimination only (excludes DFS reordering)
+    total_reorder_time = 0.0     # DFS reordering only
+    total_ge_calls = 0
     
     # Rather than return the individual variables, consolidate these into a dictionary and return this at the end.
     simulation_results_dict = {}
@@ -1001,6 +1016,10 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
         # In the erasure-decoder, we always use an error rate of 0.5.
         E_index_set, e_index_set = generate_random_erasure_and_error_index_sets(HGP_code.num_qubits,erasure_rate,0.5)
         s_index_set = HGP_code.Hz_syn_index_set_for_X_err(e_index_set)
+        
+        # Reset the per-trial GE instrumentation and start the decode timer.
+        reset_solver_stats()
+        trial_start_time = time.perf_counter()
         
         # Attempt the to correct the error using the following four modified versions of the decoder:
         # 1. Peeling decoder only (M=0)
@@ -1052,6 +1071,14 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
             # If the decoder failed to predict an error, this is a true decoding failure.
             num_true_decoding_failures += 1
 
+        # Record the wall-clock decode time and the GE instrumentation for this trial.
+        # This is done outside the try/except so timing is captured for both successes and failures.
+        total_decode_time += (time.perf_counter() - trial_start_time)
+        ge_stats = snapshot_solver_stats()
+        total_ge_time += ge_stats["ge_time"]
+        total_reorder_time += ge_stats["reorder_time"]
+        total_ge_calls += ge_stats["ge_calls"]
+
         # Write a print statment to track the progress of the simulation
         if ((iterations+1)%progress_count == 0):
             print("Current progress: ",iterations+1," simulations completed at ",erasure_rate," erasure rate.")
@@ -1076,6 +1103,21 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     simulation_results_dict['failure_rate_peeling_M2'] = ((num_iterations - num_successes_peeling_M2)/float(num_iterations))
     simulation_results_dict['failure_rate_peeling_M2_cluster'] = (
         (num_iterations - num_successes_peeling_M2_cluster)/float(num_iterations))
+    
+    # Record the solver configuration used for this run (for comparing conditions).
+    simulation_results_dict['ge_backend'] = utilities.SOLVER_CONFIG['backend']
+    simulation_results_dict['ge_reorder'] = utilities.SOLVER_CONFIG['reorder']
+    
+    # Record the timing / Gaussian-elimination instrumentation.
+    # NOTE: total_ge_time is elimination only and EXCLUDES DFS reordering, which is
+    # tracked separately in total_reorder_time so the GE comparison is apple-to-apple.
+    simulation_results_dict['total_decode_time'] = total_decode_time
+    simulation_results_dict['mean_decode_time'] = total_decode_time/float(num_iterations)
+    simulation_results_dict['total_ge_time'] = total_ge_time
+    simulation_results_dict['total_reorder_time'] = total_reorder_time
+    simulation_results_dict['num_ge_calls'] = total_ge_calls
+    simulation_results_dict['mean_ge_time_per_call'] = (
+        total_ge_time/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
             
     # Return the number of decoding failures, logical errors, and decoding successes.
     return simulation_results_dict
@@ -1095,7 +1137,7 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
 # Function Outputs:
 # list_of_decoder_performance_dicts: a list of dictionaries tracking the decoder's performance at different error rates.
 
-def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0):
+def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasure_rate,steps,num_iterations,min_erasure_rate=0,seed=None):
     
     # Initialize a dictionary to store the performance information for this code.
     list_of_decoder_performance_dicts = []
@@ -1104,17 +1146,27 @@ def run_combined_peeling_cluster_decoder_varying_erasure_rate(HGP_code,max_erasu
     step_size = (max_erasure_rate - min_erasure_rate)/float(steps)
     erasure_rate = min_erasure_rate
     
+    # Track a step index so that, when a base seed is supplied, each erasure rate uses a
+    # distinct-but-reproducible seed. The same (HGP_code, seed) therefore yields identical
+    # erasure/error samples regardless of the solver backend, enabling a fair comparison.
+    step_index = 0
+    
     # Test the performance of the dictionary in error rate steps of size step_size until reaching the maximum error rate.
     # For each fixed error_rate, record a dictionary tracking the performance.
     while (erasure_rate < max_erasure_rate):
         # Increment the erasure rate by the step size.
         erasure_rate += step_size
         
+        # Derive a per-step seed when a base seed is supplied (otherwise leave RNG untouched).
+        step_seed = (seed + step_index) if (seed is not None) else None
+        
         # Run the simulation using this erasure rate; I will assume that cluster cycles are not excluded.
-        simulation_results_dict = combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate)
+        simulation_results_dict = combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_rate,seed=step_seed)
         
         # Append this dictionary to the list
         list_of_decoder_performance_dicts.append(simulation_results_dict)
+        
+        step_index += 1
         
     # Return the list of performance dicts.
     return list_of_decoder_performance_dicts
@@ -1182,6 +1234,159 @@ def write_list_of_performance_dictionaries_to_file(HGP_code,list_of_perf_dicts,A
 
 
 
+# Mapping of named experiment conditions to solver configurations.
+# These are the three conditions compared in the experiment:
+#   dense      : original dense GF(2) Gaussian elimination (baseline)
+#   sparse     : custom sparse GF(2) Gaussian elimination
+#   sparse_dfs : custom sparse GF(2) GE with DFS matrix reordering (the proposal)
+
+EXPERIMENT_CONDITIONS = {
+    "dense":      {"backend": "dense",  "reorder": None},
+    "dense_dfs":  {"backend": "dense",  "reorder": "dfs"},
+    "sparse":     {"backend": "sparse", "reorder": None},
+    "sparse_dfs": {"backend": "sparse", "reorder": "dfs"},
+}
+
+
+# Function to run the full varying-erasure-rate experiment for a single condition.
+# Sets the global solver configuration, runs every code, and (optionally) writes one
+# results file per code tagged with the condition name.
+
+# Function Inputs:
+# condition: one of the keys of EXPERIMENT_CONDITIONS.
+# list_of_named_codes: a list of (name_string, HGP_code) tuples to run.
+# max_erasure_rate, steps, num_iterations, min_erasure_rate: simulation sweep parameters.
+# seed: base RNG seed so all conditions see identical erasure/error samples.
+# write_files: whether to persist results to .txt files.
+
+# Function Outputs:
+# results_by_code: a dict mapping code name -> list of performance dictionaries.
+
+def run_experiment(condition, list_of_named_codes, max_erasure_rate=0.32, steps=16,
+                   num_iterations=1000, min_erasure_rate=0.0, seed=12345, write_files=True,
+                   file_tag=""):
+
+    if (condition not in EXPERIMENT_CONDITIONS):
+        raise Exception("Unknown condition '"+str(condition)+"'; expected one of "+str(list(EXPERIMENT_CONDITIONS.keys())))
+
+    # Configure the per-cluster classical solver for this condition.
+    config = EXPERIMENT_CONDITIONS[condition]
+    set_solver_config(backend=config["backend"], reorder=config["reorder"])
+
+    print("=== Running condition '"+condition+"' (backend="+str(config["backend"])+", reorder="+str(config["reorder"])+") ===")
+
+    results_by_code = {}
+    for code_name, HGP_code_object in list_of_named_codes:
+        print("  - Code:", code_name, "("+str(HGP_code_object.num_qubits)+" qubits)")
+        perf_list = run_combined_peeling_cluster_decoder_varying_erasure_rate(
+            HGP_code_object, max_erasure_rate, steps, num_iterations,
+            min_erasure_rate=min_erasure_rate, seed=seed)
+        results_by_code[code_name] = perf_list
+
+        if write_files:
+            # file_tag distinguishes separate experiment campaigns so their data files do not collide.
+            file_name = code_name+"_"+condition+"_"+file_tag+str(num_iterations)+"trials_"+str(date.today())
+            written = write_list_of_performance_dictionaries_to_file(
+                HGP_code_object, perf_list, ArrayJob=False, file_name=file_name)
+            print("    wrote:", written)
+
+    return results_by_code
+
+
+# Function to run all three conditions and print a compact comparison summary.
+
+def run_all_conditions(list_of_named_codes, max_erasure_rate=0.32, steps=16,
+                       num_iterations=1000, min_erasure_rate=0.0, seed=12345, write_files=True):
+
+    all_results = {}
+    for condition in ["dense", "sparse", "sparse_dfs"]:
+        all_results[condition] = run_experiment(
+            condition, list_of_named_codes, max_erasure_rate=max_erasure_rate, steps=steps,
+            num_iterations=num_iterations, min_erasure_rate=min_erasure_rate, seed=seed, write_files=write_files)
+
+    # Print a compact comparison at the highest erasure rate for each code.
+    print()
+    print("=" * 78)
+    print("Comparison at the maximum erasure rate (failure_rate_peeling_M2_cluster / timing):")
+    print("Note: total_ge_time is elimination only; DFS reordering is in total_reorder_time.")
+    print("=" * 78)
+    for code_name, _ in list_of_named_codes:
+        print("Code:", code_name)
+        for condition in ["dense", "sparse", "sparse_dfs"]:
+            last = all_results[condition][code_name][-1]
+            print("  {0:<11s} erasure_rate={1:.4f}  failure_rate={2:.4f}  total_ge_time={3:.4e}s  reorder_time={4:.4e}s  ge_calls={5}".format(
+                condition,
+                last['erasure_rate'],
+                last['failure_rate_peeling_M2_cluster'],
+                last['total_ge_time'],
+                last.get('total_reorder_time', 0.0),
+                last['num_ge_calls']))
+        print()
+
+    return all_results
+
+
+# Quick, low-cost experiment driver for interactive iteration.
+# Uses small codes and a modest trial count so it finishes quickly.
+
+def experiment_main():
+
+    print("Running quick three-condition experiment (dense / sparse / sparse+DFS).")
+
+    # Small / modest configuration for fast iteration.
+    num_trials = 1000
+    seed = 12345
+
+    named_codes = []
+    named_codes.append(("Toric3", Toric3))
+    named_codes.append(("C_625", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')))
+
+    run_all_conditions(named_codes, max_erasure_rate=0.32, steps=16, num_iterations=num_trials, seed=seed)
+
+
+# Separate experiment campaign: Dense GE vs Dense GE + DFS reordering (no sparse GE at all).
+# Writes its own data files tagged "DENSEEXP_" so it never overwrites the three-way campaign's files.
+
+def experiment_dense_dfs_main():
+
+    print("Running Dense-vs-Dense+DFS experiment (no sparse GE).")
+
+    num_trials = 1000
+    seed = 12345
+    file_tag = "DENSEEXP_"
+
+    named_codes = []
+    named_codes.append(("Toric3", Toric3))
+    named_codes.append(("C_625", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')))
+
+    all_results = {}
+    for condition in ["dense", "dense_dfs"]:
+        all_results[condition] = run_experiment(
+            condition, named_codes, max_erasure_rate=0.32, steps=16,
+            num_iterations=num_trials, seed=seed, file_tag=file_tag)
+
+    # Compact comparison at the highest erasure rate.
+    print()
+    print("=" * 78)
+    print("Dense vs Dense+DFS at the maximum erasure rate:")
+    print("Note: total_ge_time is elimination only; DFS reordering is in total_reorder_time.")
+    print("=" * 78)
+    for code_name, _ in named_codes:
+        print("Code:", code_name)
+        for condition in ["dense", "dense_dfs"]:
+            last = all_results[condition][code_name][-1]
+            print("  {0:<10s} erasure_rate={1:.4f}  failure_rate={2:.4f}  total_ge_time={3:.4e}s  reorder_time={4:.4e}s  ge_calls={5}".format(
+                condition,
+                last['erasure_rate'],
+                last['failure_rate_peeling_M2_cluster'],
+                last['total_ge_time'],
+                last.get('total_reorder_time', 0.0),
+                last['num_ge_calls']))
+        print()
+
+
 def main():
 
     print("Hello, world!")
@@ -1219,4 +1424,17 @@ def main():
 
     
 
-main()
+if __name__ == "__main__":
+    # Usage:
+    #   python3 peeling_cluster_decoder.py            -> quick three-condition experiment (default)
+    #   python3 peeling_cluster_decoder.py quick      -> same as above
+    #   python3 peeling_cluster_decoder.py densedfs   -> Dense vs Dense+DFS experiment (no sparse GE)
+    #   python3 peeling_cluster_decoder.py full       -> original paper-scale job via main()
+    #   python3 peeling_cluster_decoder.py <int>      -> original paper-scale array job (index = sys.argv[1])
+    arg = sys.argv[1] if (len(sys.argv) > 1) else None
+    if (arg == "full") or (arg is not None and arg.isdigit()):
+        main()
+    elif (arg == "densedfs"):
+        experiment_dense_dfs_main()
+    else:
+        experiment_main()
