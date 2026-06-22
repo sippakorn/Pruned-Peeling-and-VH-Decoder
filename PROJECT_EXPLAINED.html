@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PPVH-Connolly — Pruned-Peeling &amp; VH Erasure Decoder, Explained</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2430; --muted:#5c6675;
+    --blue:#2563eb; --green:#0a8f5f; --amber:#b7791f; --pink:#c81e63; --violet:#6d28d9;
+    --line:#e2e6ec;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:40px 24px 120px}
+  header.hero{
+    border-bottom:1px solid var(--line); padding-bottom:26px; margin-bottom:10px;
+  }
+  h1{font-size:32px; line-height:1.2; margin:0 0 8px}
+  h1 .sub{display:block; font-size:16px; color:var(--muted); font-weight:400; margin-top:8px}
+  h2{font-size:25px; margin:54px 0 6px; padding-top:16px; border-top:1px solid var(--line)}
+  h3{font-size:20px; margin:34px 0 6px; color:var(--blue)}
+  h4{font-size:16px; margin:20px 0 4px; color:var(--violet); letter-spacing:.3px}
+  p{margin:10px 0}
+  a{color:var(--blue)}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.92em;
+       background:#f1f3f7; border:1px solid var(--line); border-radius:5px; padding:1px 5px}
+  .lead{font-size:18px; color:#3a4452}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px;
+       border:1px solid var(--line); color:var(--muted); margin-right:6px}
+  /* boxes */
+  .box{border-radius:12px; padding:16px 18px; margin:16px 0; border:1px solid var(--line); background:var(--panel)}
+  .box .label{font-size:12px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:8px}
+  .idea{border-left:4px solid var(--blue)}      .idea .label{color:var(--blue)}
+  .pnp{border-left:4px solid var(--amber); background:#fff8e6}   .pnp .label{color:var(--amber)}
+  .codept{border-left:4px solid var(--green)}   .codept .label{color:var(--green)}
+  .note{border-left:4px solid var(--pink); background:#fdeef3}  .note .label{color:var(--pink)}
+  pre{margin:10px 0 4px; background:#f1f3f7; border:1px solid var(--line); border-radius:8px;
+      padding:12px 14px; overflow-x:auto; font-size:13.5px; line-height:1.5}
+  pre code{background:none; border:none; padding:0}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .matrix{display:inline-block; background:#f1f3f7; border:1px solid var(--line);
+          border-radius:8px; padding:8px 14px; margin:6px 8px 6px 0; white-space:pre; font-size:14px}
+  .fileref{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+           color:var(--green); display:block; margin-bottom:6px}
+  .toc{columns:2; column-gap:30px; font-size:14.5px}
+  .toc a{display:block; padding:3px 0; text-decoration:none; color:#344256}
+  .toc a:hover{color:var(--blue)}
+  .pill{color:var(--amber)}
+  table.params{border-collapse:collapse; margin:14px 0; font-size:14px; width:100%}
+  table.params td, table.params th{border:1px solid var(--line); padding:7px 11px; text-align:left}
+  table.params th{background:#f1f3f7; color:var(--muted)}
+  .kbd{font-family:monospace; background:#f1f3f7; border:1px solid var(--line); border-bottom-width:2px;
+       border-radius:5px; padding:1px 6px; font-size:.9em}
+  hr{border:none; border-top:1px solid var(--line); margin:30px 0}
+  .footer{color:var(--muted); font-size:13px; margin-top:60px; border-top:1px solid var(--line); padding-top:18px}
+  .grid{color:var(--violet)}
+  .small{font-size:13.5px; color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>PPVH&nbsp;— Pruned&nbsp;Peeling &amp; VH&nbsp;Decoder
+    <span class="sub">A guided tour of a fast erasure decoder for hypergraph&nbsp;product (HGP) quantum&nbsp;LDPC codes.
+    Every theory box is refreshed first, given a tiny pen&#8209;and&#8209;paper example, then linked to the exact code.</span>
+  </h1>
+  <span class="tag">Quantum error correction</span>
+  <span class="tag">CSS / qLDPC codes</span>
+  <span class="tag">Python + NumPy</span>
+  <span class="tag">Connolly, Londe, Leverrier, Delfosse (2022)</span>
+</header>
+
+<p class="lead">This repository implements the decoders from the paper
+<em>“Fast erasure decoder for a class of quantum LDPC codes”</em>
+(<a href="http://arxiv.org/abs/2208.01002">arXiv:2208.01002</a>).
+Given a quantum code and a batch of <strong>erased</strong> qubits, the goal is to figure out
+<em>which</em> qubits actually flipped — quickly — using a chain of increasingly powerful tricks:
+plain <strong>peeling</strong>, then <strong>pruned peeling</strong> (the “VH” = vertical/horizontal trick),
+and finally a <strong>cluster decoder</strong>.</p>
+
+<div class="box idea">
+  <div class="label">The 30-second picture</div>
+  Qubits sit on a grid. Noise <em>erases</em> some of them (we know <em>which</em> are suspect, just not their values).
+  A set of parity <strong>checks</strong> reports a <strong>syndrome</strong> (which parities are violated).
+  The decoder must invent an error pattern, living only on erased qubits, that reproduces that syndrome.
+  The four files below build the code, generate random erasures, and run the decoder thousands of times to
+  measure how often it succeeds.
+</div>
+
+<h3>What’s in the box</h3>
+<table class="params">
+<tr><th>File</th><th>Role</th></tr>
+<tr><td class="mono">Hypergraph_Product_Code_Construction_v3.py</td><td>Builds the HGP quantum code from two classical codes; defines the <code>HGP_code</code>, <code>Check</code>, <code>Generator</code> classes; syndrome &amp; logical-error tests.</td></tr>
+<tr><td class="mono">utilities.py</td><td>Helpers: random erasures/errors, Tanner-graph adjacency, Gaussian elimination over GF(2), splitting the erasure into connected components &amp; clusters.</td></tr>
+<tr><td class="mono">peeling_cluster_decoder.py</td><td>The decoders themselves: peeling (M=0,1,2), the recursive cluster/VH decoder, and the Monte-Carlo simulation harness.</td></tr>
+<tr><td class="mono">PEG_HGP_code_(3,4)_family_*.txt</td><td>Sample classical parity-check matrices (as Tanner-graph adjacency lists) that seed real-sized codes (625–2025 qubits).</td></tr>
+</table>
+
+<h3>Contents</h3>
+<nav class="toc">
+  <a href="#gf2">1 · Bits, parity checks &amp; GF(2)</a>
+  <a href="#tanner">2 · Tanner graphs &amp; adjacency lists</a>
+  <a href="#erasure">3 · The erasure channel</a>
+  <a href="#css">4 · CSS codes: H<sub>x</sub>, H<sub>z</sub> &amp; the syndrome</a>
+  <a href="#hgp">5 · The hypergraph product construction</a>
+  <a href="#biindex">6 · Grid coordinates: index ↔ biindex</a>
+  <a href="#logical">7 · Logical operators &amp; logical errors</a>
+  <a href="#peel">8 · The peeling decoder (M=0): dangling checks</a>
+  <a href="#vh">9 · Pruned peeling (M=1,2): the VH trick</a>
+  <a href="#cluster">10 · Stopping sets, components &amp; clusters</a>
+  <a href="#recurse">11 · The cluster decoder: recursive peeling</a>
+  <a href="#gauss">12 · Solving a cluster: Gaussian elimination</a>
+  <a href="#sim">13 · Putting it together &amp; the simulation</a>
+  <a href="#run">14 · How to run it yourself</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="gf2">1 · Bits, parity checks &amp; GF(2)</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Everything here is arithmetic <strong>modulo 2</strong> (the field GF(2)): <code>1+1=0</code>, and addition is the
+  same as <strong>XOR</strong>. A classical code is described by a <strong>parity-check matrix</strong> <span class="mono">H</span>.
+  A bit string <span class="mono">v</span> is a valid codeword iff <span class="mono">H·v = 0 (mod 2)</span>.
+  If an error <span class="mono">e</span> happens, the product <span class="mono">s = H·e (mod 2)</span> is the
+  <strong>syndrome</strong> — a short fingerprint of the error. Each <em>row</em> of H is one parity check;
+  it XORs together the bits where that row has a 1.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  The 3-bit repetition code has parity-check matrix (this exact matrix lives in the code as <code>Hrep3</code>):
+  <div class="matrix">H = | 1 1 0 |
+    | 0 1 1 |
+    | 1 0 1 |</div>
+  Take the error <span class="mono">e = (1, 0, 1)</span>. Compute each row’s dot product, then reduce mod 2:
+  <div class="matrix">row 0 · e = 1·1 + 1·0 + 0·1 = 1
+row 1 · e = 0·1 + 1·0 + 1·1 = 1
+row 2 · e = 1·1 + 0·0 + 1·1 = 2 → 0  (mod 2)</div>
+  Syndrome <span class="mono">s = (1, 1, 0)</span>. Row 2 “XORs to 0” because qubits 0 and 2 <em>both</em> flipped and cancel.
+  That cancellation — two errors hiding from one check — is the whole reason decoding is hard.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — XOR view of H·e on the flat 1-D array</div>
+  Here is the same operation on the real quantum code, where the error is one flat 18-bit vector (§6). Multiplying
+  <span class="mono">H<sub>z</sub>·e (mod 2)</span> is, row by row, just: <em>AND the row with e, then XOR all the 1s
+  together</em>. Take the error on qubits 0 and 1, i.e. <span class="mono">e = 110000000000000000</span>:
+  <div class="matrix">e            =  1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0      (qubits 0..17)
+
+check 0 row  =  1 1 0 0 0 0 0 0 0 1 0 0 0 0 0 1 0 0      (touches 0,1,9,15)
+  row AND e  =  1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0      → two 1s
+  XOR them   =  1 ⊕ 1 = 0      ✗ both flips cancel — check 0 stays quiet
+
+check 1 row  =  0 1 1 0 0 0 0 0 0 0 1 0 0 0 0 0 1 0      (touches 1,2,10,16)
+  row AND e  =  0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0      → one 1
+  XOR them   =  1              ✓ check 1 fires
+
+check 2 row  =  1 0 1 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1      (touches 0,2,11,17)
+  row AND e  =  1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0      → one 1
+  XOR them   =  1              ✓ check 2 fires</div>
+  Doing this for all 9 rows gives the syndrome <span class="mono">s = 011000000</span>, i.e. triggered checks
+  <span class="mono">{1, 2}</span>. The XOR is what makes check 0 silent even though <em>two</em> of its qubits flipped —
+  exactly the cancellation from the 3-bit example, now on the flat array.
+  <br><br>
+  <strong>The shortcut the code uses.</strong> Since only the 1-positions matter, “XOR the row with e” is the same as
+  “is the <em>overlap odd?</em>”. So the syndrome bit for check <span class="mono">i</span> is just
+  <span class="mono">|support(e) ∩ qubits(check i)| mod 2</span> — no matrix needed:
+  <div class="matrix">check 0:  {0,1,9,15} ∩ {0,1} = {0,1}  → size 2 → even → 0
+check 1:  {1,2,10,16} ∩ {0,1} = {1}    → size 1 → odd  → 1
+check 2:  {0,2,11,17} ∩ {0,1} = {0}    → size 1 → odd  → 1</div>
+  Same answer <span class="mono">{1, 2}</span>, computed straight from the 1-D index sets.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 394–397, 410–416 &amp; 503</span>
+<pre><code>Hrep3 = np.array([[1,1,0],[0,1,1],[1,0,1]],dtype=int)   # the example matrix
+
+def Hz_syn_for_X_err(self,err_vect):                 # DENSE: the matrix–vector form
+    ...
+    return self.Hz.dot(err_vect.T)%2                 # &lt;-- exactly s = H·e (mod 2)
+
+def Hz_syn_index_set_for_X_err(self,error_index_set):   # SPARSE: the overlap-parity form
+    syndrome_bit_index_set = set()
+    for i in range(self.num_checks):
+        row_index_set = self.list_of_qubits_per_check[i]
+        if (len(row_index_set.intersection(error_index_set))%2 != 0):   # odd overlap → check fires
+            syndrome_bit_index_set.add(i)
+    return syndrome_bit_index_set</code></pre>
+  Both compute the very same syndrome. The dense version literally evaluates <span class="mono">H<sub>z</sub>·e (mod 2)</span>;
+  the sparse version (lines 410–416, the decoder’s workhorse) replaces each row’s XOR with the
+  <code>len(intersection)%2</code> odd-overlap test from the box above — no matrix multiply, just 1-D index sets.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tanner">2 · Tanner graphs &amp; adjacency lists</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  A parity-check matrix is really a <strong>bipartite graph</strong> (a <em>Tanner graph</em>): on one side
+  the bits/qubits (columns), on the other the checks (rows), with an edge wherever H has a 1.
+  Working with the graph — “which qubits touch this check?” — is far cheaper than multiplying big matrices,
+  so the code stores H as an <strong>adjacency list</strong>: for each row, the <em>set</em> of column indices that are 1.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Read <code>Hrep3</code> row by row. A 1 in column <span class="mono">j</span> means “check touches bit <span class="mono">j</span>”:
+  <div class="matrix">check 0 → {0, 1}      (row 0 = 1 1 0)
+check 1 → {1, 2}      (row 1 = 0 1 1)
+check 2 → {0, 2}      (row 2 = 1 0 1)</div>
+  Transpose the picture and you get “checks per bit”: bit 0 → {0, 2}, bit 1 → {0, 1}, bit 2 → {1, 2}.
+  Both views are used constantly by the decoder.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 52–65 (also utilities.py 166–179)</span>
+<pre><code>def compute_adjacency_list(H,col_index_shift=0):
+    num_rows, num_cols = np.shape(H)
+    adjacency_list = []
+    for i in range(num_rows):
+        temp_row_set = set()
+        for j in range(num_cols):
+            if(H[i][j] != 0):
+                temp_row_set.add(j+col_index_shift)   # bit j touches check i
+        adjacency_list.append(temp_row_set)
+    return adjacency_list</code></pre>
+  Inside <code>HGP_code</code> this builds the workhorse lists <code>list_of_qubits_per_check</code> and
+  <code>list_of_checks_per_qubit</code> (lines 319–329). The <code>col_index_shift</code> argument is how
+  “vertical” qubits get their indices offset — more on that in §6.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="erasure">3 · The erasure channel</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  An <strong>erasure</strong> is the friendly cousin of a general error: the channel <em>tells you which qubits
+  were disturbed</em> (the <strong>erasure set</strong> E) but not their new values. Inside E, each qubit may or
+  may not have actually flipped. So the decoder’s job shrinks: it only needs to guess values on E, and it knows
+  any correction must be <em>supported on E</em> (zero everywhere else).
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Suppose 18 qubits, erasure rate 20%. Flip an imaginary coin per qubit:
+  <div class="matrix">E (erased)  = {0, 1, 5, 11}          ← "suspect" qubits, values unknown
+e (actual)  = {1, 11}    ⊆ E         ← which suspects truly flipped</div>
+  You, the decoder, are <em>given</em> E and the syndrome of e — but <strong>not</strong> e itself.
+  You must reconstruct an error living inside E that matches the syndrome.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py · lines 84–118</span>
+<pre><code>def generate_erasure_pattern_index_set(n,erasure_rate):
+    erasure_index_set = set()
+    for i in range(n):
+        if (random.random() &lt;= erasure_rate):
+            erasure_index_set.add(i)            # this qubit is erased
+    return erasure_index_set
+
+def generate_random_error_index_set_with_erasure_support(n,erasure_index_set,error_rate):
+    error_index_set = set()
+    for i in range(n):
+        if (i in erasure_index_set):            # errors ONLY on erased qubits
+            if (random.random() &lt;= error_rate):
+                error_index_set.add(i)
+    return error_index_set</code></pre>
+  The simulation always uses <code>error_rate = 0.5</code> inside the erasure (a flat coin), which is the worst
+  case for erasure decoding.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="css">4 · CSS codes: H<sub>x</sub>, H<sub>z</sub> &amp; the syndrome</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  A <strong>CSS quantum code</strong> is built from <em>two</em> classical parity-check matrices,
+  <span class="mono">H<sub>x</sub></span> and <span class="mono">H<sub>z</sub></span>, that detect X-type and Z-type
+  errors respectively. For the quantum code to make sense, every X-check must <strong>commute</strong> with every
+  Z-check, which over GF(2) becomes the one clean condition
+  <span class="mono">H<sub>x</sub>·H<sub>z</sub><sup>T</sup> = 0 (mod 2)</span>.
+  Decoding the two error types is symmetric, so this project decodes <strong>X-errors using H<sub>z</sub></strong>
+  and never has to think about both at once.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Commutation just means: any X-check and any Z-check must share an <strong>even</strong> number of qubits.
+  Picture an X-check on qubits {a, b, c} and a Z-check on {b, c, d}; they overlap on {b, c} — two qubits — even,
+  so they commute. If they overlapped on a single qubit, the operators would anticommute and the code would be ill-defined.
+  The HGP construction in §5 is engineered so this is <em>automatically</em> true everywhere.
+  (Verified numerically for the toric example: <span class="mono">H<sub>x</sub>·H<sub>z</sub><sup>T</sup> = 0</span> ✓.)
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 281–287</span>
+<pre><code>self.Hx = np.hstack((self.Hx1,self.Hx2))   # X-type stabilisers  (9 × 18 for the toric example)
+self.Hz = np.hstack((self.Hz1,self.Hz2))   # Z-type stabilisers</code></pre>
+  X-errors are detected with <code>Hz_syn_for_X_err</code> (line 394); Z-errors with <code>Hx_syn_for_Z_err</code>
+  (line 399). The commutation <span class="mono">H<sub>x</sub>H<sub>z</sub><sup>T</sup>=0</span> is guaranteed by the
+  product structure, not checked at runtime.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="hgp">5 · The hypergraph product (HGP) construction</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The <strong>hypergraph product</strong> takes two classical codes (matrices <span class="mono">H1, H2</span>) and
+  multiplies their Tanner graphs into a 2-D quantum code, using <strong>Kronecker products</strong> with identity
+  matrices. The qubits split into two families laid out on a grid:
+  <ul class="small" style="margin:6px 0">
+    <li><span class="grid">horizontal qubits</span> = bits×bits (the <span class="mono">n1·n2</span> block), and</li>
+    <li><span class="grid">vertical qubits</span> = checks×checks (the <span class="mono">r1·r2</span> block).</li>
+  </ul>
+  The resulting matrices are
+  <span class="mono">H<sub>x</sub> = [ H1⊗I | I⊗H2<sup>T</sup> ]</span> and
+  <span class="mono">H<sub>z</sub> = [ I⊗H2 | H1<sup>T</sup>⊗I ]</span>.
+  The “⊗I” is what tiles one small code across a whole row or column of the grid.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — what ⊗I does</div>
+  The Kronecker product <span class="mono">A⊗B</span> replaces every entry <span class="mono">a</span> of A with the
+  block <span class="mono">a·B</span>. Tensoring with the identity just makes <code>k</code> independent copies.
+  Take the tiny check <span class="mono">H1 = [1 1]</span> and <span class="mono">I<sub>2</sub></span>:
+  <div class="matrix">H1 ⊗ I2 = | 1 0 | 1 0 |      I2 ⊗ H1 = | 1 1 | 0 0 |
+          | 0 1 | 0 1 |               | 0 0 | 1 1 |</div>
+  Left version: one check spanning <em>columns</em> of the grid. Right version: one check spanning a <em>row</em>.
+  Stack horizontal- and vertical-type blocks side by side and you have <span class="mono">H<sub>x</sub></span>,
+  <span class="mono">H<sub>z</sub></span>. Doing this with <span class="mono">H1 = H2 = Hrep3</span> gives the
+  3×3 <strong>toric code</strong> — the project’s built-in test case.
+</div>
+
+<table class="params">
+<caption class="small" style="text-align:left;margin-bottom:6px">Toric example = <code>HGP_code(Hrep3, Hrep3)</code>, computed by running the code:</caption>
+<tr><th>quantity</th><th>value</th><th>meaning</th></tr>
+<tr><td class="mono">num_qubits</td><td>18</td><td>9 horizontal + 9 vertical = n1·n2 + r1·r2</td></tr>
+<tr><td class="mono">Hx, Hz shape</td><td>9 × 18</td><td>9 X-checks (“generators”), 9 Z-checks</td></tr>
+<tr><td class="mono">dim (k)</td><td>2</td><td>encodes 2 logical qubits → a [[18, 2, 3]] code</td></tr>
+</table>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 278–287</span>
+<pre><code>self.num_qubits = self.n1*self.n2 + self.r1*self.r2      # horizontal + vertical
+
+self.Hx1 = np.kron(H1, np.eye(self.n2,dtype=int))        # H1 ⊗ I
+self.Hx2 = np.kron(np.eye(self.r1,dtype=int), np.transpose(H2))   # I ⊗ H2ᵀ
+self.Hx  = np.hstack((self.Hx1,self.Hx2))
+
+self.Hz1 = np.kron(np.eye(self.n1,dtype=int), H2)        # I ⊗ H2
+self.Hz2 = np.kron(np.transpose(H1), np.eye(self.r2,dtype=int))   # H1ᵀ ⊗ I
+self.Hz  = np.hstack((self.Hz1,self.Hz2))</code></pre>
+  The geometric “grid” picture (B1×B2 etc.) is drawn in the comment block at lines 9–24.
+</div>
+
+<div class="box idea">
+  <div class="label">Reading the stride in H<sub>z</sub></div>
+  Each <span class="mono">⊗ I</span> lays a small pattern onto the flat array at a fixed <strong>stride</strong> — and that
+  stride is the grid’s <em>row length</em>, <span class="mono">num_cols</span>, never the length of the error vector.
+  That is precisely the row-major rule <span class="mono">index = row·num_cols + col</span> (the <code>index_to_biindex</code>
+  floor/mod of §6) showing up inside the matrix. The two blocks of <span class="mono">H<sub>z</sub></span> do it two ways:
+  <ul class="small" style="margin:8px 0">
+    <li><span class="mono">I<sub>n1</sub> ⊗ H2</span> — <strong>contiguous</strong> copies of <span class="mono">H2</span>,
+        each grid-row offset by <span class="mono">n2</span>. (“feels H2 along its row”)</li>
+    <li><span class="mono">H1<sup>T</sup> ⊗ I<sub>r2</sub></span> — a single pattern <strong>spread out at stride</strong>
+        <span class="mono">r2</span>. (“feels H1<sup>T</sup> along its column”)</li>
+  </ul>
+  <strong>Decompose one real row to see it.</strong> Check 0 of the toric code touches qubits
+  <span class="mono">{0, 1, 9, 15}</span>. Split at the block boundary (qubit 9 = <span class="mono">num_h_qubits</span>):
+  <div class="matrix">horizontal part {0, 1}    ← H2 row 0 = [1 1 0], dropped contiguously into grid-row 0
+vertical  part {9, 15}    ← H1ᵀ row 0 = (column 0 of Hrep3) = positions {0, 2},
+                            placed at stride r2 = 3  →  9 + 0 = 9   and   9 + 2·3 = 15</div>
+  The contiguous <span class="mono">{0,1}</span> and the strided <span class="mono">{9,15}</span> (note
+  <span class="mono">15 − 9 = 2·r2</span>) are the two halves of the Kronecker structure on one flat row. This is also
+  <em>why</em> a whole erased grid-row is a tidy, regularly-strided slice whose checks are just a copy of the small code
+  <span class="mono">H2</span> — the structure the decoder peels along in §11.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="biindex">6 · Grid coordinates: index ↔ biindex</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Because qubits live on a 2-D grid but are <em>stored</em> as a flat 1-D list, the code constantly converts between
+  a single <span class="mono">index</span> and a 2-D <span class="mono">(row, col)</span> <strong>biindex</strong>.
+  That conversion is plain integer division: <span class="mono">row = index // num_cols</span>,
+  <span class="mono">col = index % num_cols</span>. Vertical qubits are numbered <em>after</em> all horizontal ones,
+  so they carry an <span class="mono">index_shift</span> equal to the number of horizontal qubits.
+  This row/column structure is exactly <em>why</em> a row of erased qubits behaves like one little classical code.
+</div>
+
+<div class="box idea">
+  <div class="label">Why two coordinate systems?</div>
+  The flat 1-D index and the 2-D biindex aren’t redundant — they serve two different masters, so the code keeps both
+  and converts on demand.
+  <ul class="small" style="margin:8px 0">
+    <li><strong>1-D is forced by the algebra.</strong> The core operation is a matrix–vector product
+        <span class="mono">H<sub>z</sub>·e</span>, and a vector has exactly <em>one</em> index: each qubit
+        <em>is</em> a column of <span class="mono">H<sub>z</sub></span>, i.e. a single integer. Errors, syndromes,
+        logical tests and adjacency lists all index qubits by one number. There’s simply no 2-D-native way to compute
+        <span class="mono">H<sub>z</sub>·e</span>. (And since the two qubit blocks have <em>different</em> shapes —
+        <span class="mono">n1×n2</span> vs <span class="mono">r1×r2</span> — a flat list is the only uniform container
+        that holds both, which is what <span class="mono">index_shift</span> is for.)</li>
+    <li><strong>2-D is needed by the decoder.</strong> The flat list hides all structure; the decoding <em>strategy</em>
+        is geometric (peel along rows/columns, group qubits into clusters, map a row to a classical code). That meaning
+        only appears once you reconstruct the <span class="mono">(row, col)</span> position.</li>
+  </ul>
+  <strong>Same erasure, two views.</strong> The horizontal qubits <span class="mono">0…8</span> of Toric3 carry a
+  hidden 3×3 layout. The erasure <span class="mono">{0, 1, 2}</span> is just three integers in 1-D — but in 2-D it is
+  obviously the <em>top row</em>, instantly recognizable as one classical repetition-code problem (solved along that row
+  with <span class="mono">H2</span>, see §11):
+  <div class="matrix">flat list:   0 1 2 | 3 4 5 | 6 7 8        erasure {0,1,2} = three integers (no pattern)
+
+2-D overlay:  (0,0)=0  (0,1)=1  (0,2)=2     ← {0,1,2} is the WHOLE TOP ROW
+              (1,0)=3  (1,1)=4  (1,2)=5
+              (2,0)=6  (2,1)=7  (2,2)=8</div>
+  Like a chessboard: number the squares <span class="mono">0–63</span> to store them, but call them
+  <span class="mono">(file, rank)</span> to reason about moves. Same square, two coordinate systems — store and compute
+  in 1-D, decide in 2-D, convert with the two functions below.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  With <span class="mono">num_cols = 3</span>:
+  <div class="matrix">index 5  →  (5 // 3, 5 % 3) = (1, 2)     "row 1, column 2"
+biindex (1,2)  →  1·3 + 2 = 5            ... and back again</div>
+  For a vertical qubit with <span class="mono">index_shift = 9</span> (the toric case): index 11 →
+  <span class="mono">((11−9)//3, (11−9)%3) = (0, 2)</span> in the vertical block.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 26–30</span>
+<pre><code>def index_to_biindex(index,num_cols,index_shift=0):
+    return (index-index_shift)//num_cols, (index-index_shift)%num_cols
+
+def biindex_to_index(biindex,num_cols,index_shift=0):
+    return biindex[0]*num_cols + biindex[1] + index_shift</code></pre>
+  The “horizontal vs. vertical” test is simply <code>qubit_index &lt; HGP_code.num_h_qubits</code> — see the callout
+  below for why that one bit is needed all over the decoder.
+</div>
+
+<div class="box idea">
+  <div class="label">Why the horizontal / vertical test matters</div>
+  The qubits come in two families stored in one flat list: <strong>horizontal</strong> (the <span class="mono">B1×B2</span>
+  block, <span class="mono">n1·n2</span> of them, indexed <em>first</em>) and <strong>vertical</strong> (the
+  <span class="mono">C1×C2</span> block, indexed <em>after</em>). The test <code>qubit_index &lt; num_h_qubits</code>
+  asks “which block?”, and that answer is needed three times over:
+  <ul class="small" style="margin:8px 0">
+    <li><strong>Different grid shapes.</strong> A horizontal qubit lives on an <span class="mono">n1×n2</span> grid; a
+        vertical one on an <span class="mono">r1×r2</span> grid numbered after it. So the index↔biindex arithmetic uses a
+        <em>different</em> wrap width and offset per family
+        (<span class="mono">num_cols=n2, shift=0</span> vs. <span class="mono">num_cols=r2, shift=num_h_qubits</span>).
+        Decode an index with the wrong rule and you get the wrong square.</li>
+    <li><strong>Clusters group along different axes.</strong> A horizontal cluster is qubits sharing a grid <em>row</em>
+        (their first biindex component matches); a vertical cluster is qubits sharing a <em>column</em> (second component).
+        So the family decides which component to compare, and the two types never share a cluster.</li>
+    <li><strong>Each family maps to a different classical code (the §11 payoff).</strong> Since
+        <span class="mono">H<sub>z</sub> = [ I⊗H2 | H1<sup>T</sup>⊗I ]</span>, the left block touches only horizontal
+        qubits and the right block only vertical ones. When a cluster is solved as a small classical syndrome problem,
+        a <em>horizontal</em> cluster is solved in <span class="mono">H2</span> along its row, while a <em>vertical</em>
+        cluster is solved in <span class="mono">H1<sup>T</sup></span> along its column.</li>
+  </ul>
+  <strong>Intuition:</strong> an HGP code is a product of two classical codes on perpendicular axes — a horizontal qubit
+  feels <span class="mono">H2</span> along its row, a vertical qubit feels <span class="mono">H1<sup>T</sup></span> along
+  its column. A classical stopping set in the quantum code is really a stopping set of <em>one</em> of those two codes,
+  so the decoder must first know <em>which axis it is standing on</em>.
+  <div class="matrix">Toric3 (num_h_qubits = 9):
+  qubit  5 &lt; 9   → horizontal, biindex (1,2) → solved in H2  along row 1
+  qubit 11 ≥ 9   → vertical,   biindex (0,2) → solved in H1ᵀ along column 2</div>
+  In code: the branch appears in <code>decompose_component_into_clusters</code> and
+  <code>is_classical_stopping_set</code> (utilities.py), and decisively in
+  <code>cluster_syndrome_analysis_with_zeroing</code>, where
+  <code>classical_H = H2</code> vs. <code>H1.T</code> is chosen by exactly this test
+  (peeling_cluster_decoder.py · 193, 260–290).
+</div>
+
+<!-- ============================================================ -->
+<h2 id="logical">7 · Logical operators &amp; logical errors</h2>
+
+<h4>First, the classical story</h4>
+<div class="box idea">
+  <div class="label">Key idea — classical codes</div>
+  A classical linear code is the set of all bit strings that pass every parity check:
+  <span class="mono">C = { v : H·v = 0 }</span> — the <strong>kernel</strong> of H. Its nonzero members are the
+  <strong>codewords</strong>. A codeword is special because, having zero syndrome, <em>no check can see it</em>:
+  adding one to a message lands you on a <em>different valid message</em> silently. That is exactly what a
+  <strong>logical operator</strong> is — an undetectable change of the stored information.
+  <br><br>
+  Now decode. The channel sends a codeword, an error <span class="mono">e</span> flips some bits, and the receiver
+  only learns the syndrome <span class="mono">s = H·e</span>. Every error with that same syndrome forms one
+  <strong>coset</strong>, and any two of them differ by a codeword. The decoder guesses a representative
+  <span class="mono">ê</span> (usually the lowest weight). The <strong>residual</strong>
+  <span class="mono">r = e ⊕ ê</span> always has zero syndrome, so there are only two outcomes:
+  <ul class="small" style="margin:6px 0">
+    <li><span class="mono">r = 0</span> &nbsp;→&nbsp; perfect recovery.</li>
+    <li><span class="mono">r =</span> a nonzero codeword &nbsp;→&nbsp; a <strong>logical error</strong>: you silently
+        decoded to the <em>wrong</em> codeword.</li>
+  </ul>
+  So classically: <em>logical operators = nonzero codewords, and a logical error = a residual that is a nonzero codeword.</em>
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — classical (3-bit repetition code)</div>
+  For <code>Hrep3</code> the kernel has just two members, so there is exactly one nonzero codeword:
+  <div class="matrix">C = ker(Hrep3) = { 000 ,  111 }      →  the logical operator is 111  (flip all 3 bits)</div>
+  True error <span class="mono">e = {0}</span> gives syndrome <span class="mono">H·e = (1, 0, 1)</span>.
+  But the error <span class="mono">{1, 2}</span> has the <em>same</em> syndrome:
+  <div class="matrix">H·{0}   = (1,0,1)
+H·{1,2} = (1,0,1)        same coset!  they differ by  {0} ⊕ {1,2} = 111</div>
+  Min-weight decoding correctly picks <span class="mono">{0}</span> (weight 1) over <span class="mono">{1,2}</span>
+  (weight 2), so <span class="mono">r = 0</span>. But had it guessed <span class="mono">{1,2}</span>, the residual would be
+  the codeword <span class="mono">111</span> — a logical error. The ambiguity is <em>always</em> exactly a codeword wide.
+</div>
+
+<h4>The quantum twist: stabilizers</h4>
+<div class="box idea">
+  <div class="label">Key idea — what changes for CSS codes</div>
+  X-errors are decoded with <span class="mono">H<sub>z</sub></span> (§4), so the classical story carries over with
+  <span class="mono">H → H<sub>z</sub></span>. There is <strong>one new ingredient</strong>: the
+  <strong>stabilizers</strong> — the rows of <span class="mono">H<sub>x</sub></span> — act trivially on the quantum state.
+  Because <span class="mono">H<sub>x</sub>H<sub>z</sub><sup>T</sup>=0</span>, every stabilizer already lives in
+  <span class="mono">ker(H<sub>z</sub></span>), i.e. it has zero syndrome too. So zero-syndrome residuals now split into
+  <em>two</em> kinds instead of one:
+  <ul class="small" style="margin:6px 0">
+    <li>residual ∈ rowspace(H<sub>x</sub>) → a <strong>stabilizer</strong> → <em>harmless</em> (a quantum “do-nothing”);</li>
+    <li>residual ∈ ker(H<sub>z</sub>) but <em>not</em> a stabilizer → a true <strong>logical operator</strong> → <em>failure</em>.</li>
+  </ul>
+  That is why the quantum failure test needs a <em>second</em> condition. The matrix
+  <span class="mono">G<sub>x</sub></span> (a basis of <span class="mono">ker(H<sub>x</sub>)</span>) provides it:
+  a zero-syndrome residual <span class="mono">v</span> is a genuine logical error iff
+  <span class="mono">G<sub>x</sub>·v ≠ 0</span>. (The stabilizer part of <span class="mono">G<sub>x</sub></span> always
+  gives 0 against a zero-syndrome <span class="mono">v</span>, so only a real logical component can light it up.)
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — quantum (toric code, 18 qubits)</div>
+  The residual is the set-XOR of true and predicted errors, and (because both reproduce the syndrome) it always
+  satisfies <span class="mono">H<sub>z</sub>·v = 0</span>. The only question is <em>stabilizer or logical?</em>
+  — answered by <span class="mono">G<sub>x</sub>·v</span>:
+  <div class="matrix">residual v = {0, 3, 9, 11}  (= an Hx row, a stabilizer)
+   Hz·v = ()        ← zero syndrome
+   Gx·v = ()        ← zero  →  HARMLESS, counts as a success
+
+residual v = {0, 1, 2}      (a whole erased grid-row)
+   Hz·v = ()        ← zero syndrome (undetectable!)
+   Gx·v = {0,1,2}   ← NONZERO  →  LOGICAL ERROR, a silent failure</div>
+  Notice the failing residual <span class="mono">{0,1,2}</span> is exactly the full-row stopping set from §10 — a
+  weight-3 logical operator (the code’s distance is 3). Guessing the wrong end of that row is how the decoder fails.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · lines 445–455, 290–299; peeling_cluster_decoder.py · 1017</span>
+<pre><code>def is_non_trivial_X_logical_error_index_set(self,error_index_set):
+    if (self.Hz_syn_index_set_for_X_err(error_index_set) == set()):   # 1) zero syndrome?
+        for i in range(len(self.Gx_adj_list)):
+            row_index_set = self.Gx_adj_list[i]
+            if (len(row_index_set.intersection(error_index_set))%2 != 0):  # 2) Gx·v ≠ 0 ?
+                return True            # zero syndrome but hits a logical → silent failure
+    return False</code></pre>
+  The two <code>if</code>s are literally the two conditions above (the inner <code>len(…)%2 != 0</code> is one row of
+  <span class="mono">G<sub>x</sub>·v</span> taken over GF(2)). <code>Gx</code> — a basis of
+  <span class="mono">ker(H<sub>x</sub>)</span> — is built from <code>Hx</code> by the
+  <strong>standard form / Gaussian elimination</strong> in <code>standard_form</code> (lines 71–129) and
+  <code>compute_G</code> (143–164); the logical-qubit count <code>dim = kx + kz − num_qubits</code> is line 299.
+  The residual itself is formed as
+  <code>e_index_set.symmetric_difference(predicted_e_index_set)</code> in the simulation (line 1017).
+</div>
+
+<!-- ============================================================ -->
+<h2 id="peel">8 · The peeling decoder (M=0): dangling checks</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Peeling is greedy unzipping. A check is <strong>dangling</strong> if it touches <em>exactly one</em> erased qubit.
+  That qubit’s value is then forced: it must equal that check’s syndrome bit. So you:
+  fix the qubit, remove it from the erasure, flip the syndrome of every check it touched, and re-scan for newly
+  dangling checks. Repeat until the syndrome is clear. This is linear-time and solves any erasure whose Tanner
+  graph (restricted to E) is a <strong>forest</strong> — no cycles. Cycles are what stall it.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — a full peel on the toric code</div>
+  Erase qubits <span class="mono">E = {0, 1}</span>; the true error is <span class="mono">e = {0}</span>, giving
+  syndrome <span class="mono">s = {0, 2}</span> (checks 0 and 2 fire). Recall toric adjacencies:
+  check 0↔{0,1,…}, check 1↔{1,…}, check 2↔{0,…}.
+  <div class="matrix">erased-qubit count per check:   check0:{0,1}=2   check1:{1}=1   check2:{0}=1
+                          → dangling = {check1, check2}
+
+Step 1  pop check1 (lone qubit = 1). check1 ∉ s → bit is 0, leave qubit 1 alone.
+        remove qubit 1 from E.  Now check0 sees only {0} → becomes dangling.   E={0}
+Step 2  pop check2 (lone qubit = 0). check2 ∈ s → qubit 0 flips!  predicted={0}.
+        flip syndrome of checks touching qubit 0 = {0,2}:  s={0,2} → {} .       E={}
+Done.  syndrome empty → predicted error = {0}  ✓  (matches the truth)</div>
+  Running the real decoder on this input reports <span class="mono">total_dangling_checks_corrected = 2</span> —
+  exactly the two peels above.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · 193–194  &nbsp;|&nbsp;  peeling_cluster_decoder.py · 741–816</span>
+<pre><code># a Check knows when it is dangling:
+def is_dangling(self):
+    return (len(self.horizontal_erased_qubits.union(self.vertical_erased_qubits)) == 1)
+
+# the M=0 branch of the main loop (abridged):
+dangling_check_index = set_of_dangling_check_indices.pop()
+...
+if (dangling_check_index in s_index_set):          # syndrome bit is 1 → qubit flipped
+    predicted_e_index_set.add(qubit_index)         # (toggle)
+    for check_index in HGP_code.list_of_checks_per_qubit[qubit_index]:
+        ... # flip every adjacent syndrome bit
+E_index_set.discard(qubit_index)                   # peel the qubit away
+... # re-scan adjacent checks, some may become newly dangling</code></pre>
+  The whole decoder is one <code>while (s_index_set != set())</code> loop
+  (<code>combined_peeling_and_cluster_decoder</code>, lines 671–958) that prefers cheap moves first.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="vh">9 · Pruned peeling (M=1, M=2): the VH trick</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  When peeling stalls (a cycle, no dangling checks left), the “VH” idea — <strong>V</strong>ertical/<strong>H</strong>orizontal
+  — lets us <em>break the cycle for free</em>. If a whole X-type generator (the rows of <span class="mono">H<sub>x</sub></span>)
+  has <strong>all</strong> its qubits erased, then one of those qubits is redundant: any value works because the others can
+  absorb it. So we simply <strong>delete one erased qubit from E</strong> (don’t even change the syndrome), which often
+  re-exposes a dangling check. <span class="pill">M=1</span> does this for single fully-erased generators;
+  <span class="pill">M=2</span> does it for <strong>products of two overlapping generators</strong> (still a valid generator,
+  via symmetric difference of their supports) that are fully erased. M is just “how hard we’re willing to look.”
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Suppose an X-generator <span class="mono">g</span> touches qubits {3, 4, 5} and all three are erased, but no check is
+  dangling — peeling is stuck.
+  <div class="matrix">g's support {3,4,5} ⊆ E   →  g is "entirely erased"
+remove ONE, say qubit 5, from E   (leave the syndrome untouched)
+E now {…,3,4} — a check that touched only 5 and one other qubit may now be dangling
+→ hand control back to ordinary peeling (§8)</div>
+  M=2 product example: generators <span class="mono">g1={3,4,5}</span>, <span class="mono">g2={5,6,7}</span> overlap on 5.
+  Their product touches the symmetric difference <span class="mono">{3,4,6,7}</span>; if <em>those</em> are all erased,
+  we can again drop one qubit to make progress.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py · 253–258  &nbsp;|&nbsp;  peeling_cluster_decoder.py · 615–649, 818–924</span>
+<pre><code># a Generator knows when every adjacent qubit is erased:
+def is_entirely_erased_generator(self):
+    return ((self.horizontal_qubits == self.horizontal_erased_qubits) and
+            (self.vertical_qubits  == self.vertical_erased_qubits))
+
+# product of two generators = symmetric difference of their supports:
+for qubit_index_set in gen_qubit_indices_set_list:
+    product_generator_qubit_indices.symmetric_difference_update(qubit_index_set)
+# ... fully erased iff support == erased-support</code></pre>
+  In the main loop these are the <code>elif</code> branches: <em>M=1</em> at lines 818–865
+  (<code>set_of_entirely_erased_generator_indices</code>) and <em>M=2</em> at 867–924
+  (<code>set_of_entirely_erased_product_generator_index_pairs</code>). Overlapping-generator pairs are precomputed once
+  in <code>HGP_code.__init__</code> at lines 357–385.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cluster">10 · Stopping sets, components &amp; clusters</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  What stalls peeling is a <strong>stopping set</strong>: a sub-erasure with no dangling check (every check sees 0 or
+  ≥2 erased qubits). To attack one, the code splits the erasure structurally:
+  <ul class="small" style="margin:6px 0">
+    <li><strong>Connected components</strong> — independent islands of erased qubits (solve separately).</li>
+    <li><strong>Clusters</strong> — within a component, a maximal run of erased qubits sharing a single grid
+        <em>row</em> (horizontal) or <em>column</em> (vertical). Each cluster is a little <strong>classical</strong> problem.</li>
+    <li>A stopping set is <strong>classical</strong> if it lies entirely in one row or column; otherwise it’s the
+        genuinely 2-D case the cluster decoder handles.</li>
+  </ul>
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — why a full row stalls</div>
+  Erase a whole row: <span class="mono">E = {0, 1, 2}</span> on the toric code (true error <span class="mono">e={1}</span>,
+  syndrome <span class="mono">s = {0, 1}</span>).
+  <div class="matrix">check0:{0,1}=2    check1:{1,2}=2    check2:{0,2}=2     ← every count ≥ 2
+→ NO dangling check, NO fully-erased generator: peeling AND VH are both stuck.</div>
+  This is a single cluster forming a <em>cycle</em> in the repetition Tanner graph — a classical stopping set.
+  It is handed to the cluster decoder, which solves it as one small classical system (next section).
+  The real run confirms: <span class="mono">classical_stopping_sets_used = 1</span>, predicted <span class="mono">{1}</span> ✓.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py · 661–700 (components), 790–854 (clusters), 714–771 (classical test)</span>
+<pre><code>def decompose_subgraph_into_connected_components(HGP_code,E_index_set,Ch_index_set):
+    ...  # flood-fill: pop a qubit, walk check→qubit→check, collect the island
+
+def decompose_component_into_clusters(HGP_code,E_index_set,Ch_index_set):
+    ...  # group erased qubits sharing a grid row (horizontal) or column (vertical)
+
+def is_classical_stopping_set(HGP_code,E_index_set,Ch_index_set):
+    ...  # True iff every component lives in a single row or column</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="recurse">11 · The cluster decoder: recursive peeling of a cluster tree</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Treat each cluster as a <em>super-node</em> and connect two clusters when they <strong>share a check</strong>.
+  If that “cluster graph” is a <strong>tree</strong> (no cycles), we can peel it like §8 but one level up: a
+  <strong>dangling cluster</strong> (sharing ≤1 check with the rest) is solved on its own classically, and its shared
+  check then forces a value on its neighbour. The subtlety: a dangling cluster may admit a valid classical solution for
+  <em>both</em> values of its shared check. The code defers that choice — it recurses into the rest of the tree first,
+  then uses the returned solution to pick the consistent branch. If the cluster graph has a <strong>cycle</strong>,
+  this version declares failure (the rare hard case).
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — peeling a 3-cluster tree</div>
+  <div class="matrix">  [C1] --c12-- [C2] --c23-- [C3]      (c12, c23 = shared checks)</div>
+  C1 and C3 are dangling (one shared check each). Peel order e.g. <span class="mono">[C1, C3, C2]</span>:
+  <ol class="small" style="margin:6px 0">
+    <li>Solve C1 alone. If only one value of <span class="mono">c12</span> gives a solution, that value is forced onto C2.
+        If <em>both</em> work, remember “c12 is free” and move on.</li>
+    <li>Same for C3 / <span class="mono">c23</span>.</li>
+    <li>Solve C2 with the now-known (or removed) shared checks; back-substitute to fix any deferred free choices.</li>
+  </ol>
+  The branch is chosen by a parity test: intersect the shared check’s qubit set with the recursive solution; even ⇒ use
+  the “not-triggered” solution, odd ⇒ the “triggered” one.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">peeling_cluster_decoder.py · 95–147 (peelable?), 371–525 (recursion), 545–604 (driver)</span>
+<pre><code># a cluster tree is peelable iff we can keep removing "dangling" clusters:
+def is_cluster_decomposition_peelable(HGP_code,list_of_E_cluster_index_sets): ...
+
+# the recursive heart — defers the choice when both check-values are solvable:
+if (cluster_solution_exists_sct and cluster_solution_exists_scnt):
+    set_of_two_solution_shared_check_indices.add(shared_check_index)
+    e_comp_pred_index_set_rec = solve_cluster_tree_by_recursive_peeling(...)   # recurse first
+    if (len(HGP_code.list_of_qubits_per_check[shared_check_index]
+            .intersection(e_comp_pred_index_set_rec)) % 2 == 0):
+        e_comp_pred_index_set = e_pred_cluster_index_set_scnt    # even parity → "not triggered"
+    else:
+        e_comp_pred_index_set = e_pred_cluster_index_set_sct     # odd parity  → "triggered"</code></pre>
+  The top-level <code>cluster_decoder</code> (545–604) loops over components, builds the cluster graph, checks
+  peelability, and raises <em>“Cycle of clusters detected”</em> if it isn’t a tree.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gauss">12 · Solving a cluster: Gaussian elimination over GF(2)</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Each cluster reduces to a tiny classical problem: find a low-weight <span class="mono">e</span> with
+  <span class="mono">H·e = s</span>, supported only on the erased bits. The code zeroes the columns of non-erased bits,
+  augments <span class="mono">[H | s]</span>, and row-reduces to RREF over GF(2). Free variables are set to 0 (a
+  minimum-weight choice); pivot variables read straight off the reduced syndrome. If row reduction exposes a
+  contradiction (a <span class="mono">0 = 1</span> row), <em>no</em> solution exists for that syndrome — which is precisely
+  the signal the §11 recursion uses to decide a shared check.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Solve <span class="mono">H·e = s</span> with a 2-bit erasure. Say two checks give
+  <div class="matrix">| 1 0 | e0 |   | 1 |
+| 1 1 | e1 | = | 0 |     →  row2 ← row2 ⊕ row1 (over GF(2))
+
+| 1 0 | e0 |   | 1 |
+| 0 1 | e1 | = | 1 |     →  e0 = 1,  e1 = 1</div>
+  Read off the pivots: <span class="mono">e = (1, 1)</span>. If instead the right side had forced
+  <span class="mono">0 = 1</span>, the routine raises an exception → “no solution”.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py · 941–1012  &nbsp;|&nbsp;  standard_form: Hypergraph_..._v3.py · 71–129</span>
+<pre><code>def perform_classical_syndrome_analysis_with_erasure(H,s,E_index_set):
+    H_zeroed = H.copy()
+    for bit_index in range(num_bits):
+        if (bit_index not in E_index_set):
+            H_zeroed[:,bit_index] = 0               # forbid non-erased bits
+    H_aug = np.hstack((H_zeroed,s[:,np.newaxis]))   # augment [H | s]
+    H_aug_rref, A, pivot_indices = standard_form(H_aug)   # RREF over GF(2)
+    ...
+    predicted_e = np.zeros(np.shape(H)[1],dtype=int)
+    for i in reversed(range(len(pivot_indices))):
+        predicted_e[pivot_indices[i]] = s_rref[i]   # free vars = 0, pivots from syndrome</code></pre>
+  <code>standard_form</code> does the actual XOR-based elimination (the <code>M[:, j:] ^ flip</code> line is the
+  mod-2 row operation). The cluster-aware wrapper that also “zeroes” shared checks is
+  <code>cluster_syndrome_analysis_with_zeroing</code> (peeling_cluster_decoder.py 170–336).
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sim">13 · Putting it together &amp; the Monte-Carlo simulation</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The full decoder is a <strong>cascade</strong>, cheapest move first: <code>(1)</code> dangling checks (M=0) →
+  <code>(2)</code> erased generators (M=1) → <code>(3)</code> erased generator products (M=2) → <code>(4)</code> the
+  cluster decoder. The simulation cleverly scores <em>all four variants at once</em>: it records which techniques a
+  given decode actually needed, so a decode that finished with only peeling counts as a success for M=0, M=1, M=2,
+  and cluster simultaneously. Then it sweeps the erasure rate and reports a <strong>failure rate</strong> per variant —
+  the curve you plot to see the code’s threshold.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper — reading the scoreboard</div>
+  Our three worked examples become rows of the results dictionary:
+  <div class="matrix">E={0,1}    → steps {total_dangling_checks_corrected: 2}   → counts for M0,M1,M2,cluster
+E={0,1,2}  → steps {classical_stopping_sets_used: 1}    → counts ONLY for cluster
+residual a logical error? → counts as a FAILURE for every variant</div>
+  Failure rate of a variant = (trials − its successes) / trials, with a 95% confidence radius
+  <span class="mono">1.96·√(M(1−M)/n)</span>.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">peeling_cluster_decoder.py · 671–958 (cascade), 978–1081 (scoring), 1098–1218 (sweep &amp; main)</span>
+<pre><code># the cascade — note the strict preference order:
+while (s_index_set != set()):
+    if   (set_of_dangling_check_indices != set()):                      # (1) M=0
+        ...
+    elif (set_of_entirely_erased_generator_indices != set()):          # (2) M=1
+        ...
+    elif (set_of_entirely_erased_product_generator_index_pairs != set()):  # (3) M=2
+        ...
+    else:                                                              # (4) cluster decoder
+        cluster_decoder_pred_e_index_set = cluster_decoder(HGP_code,E_index_set,s_index_set)
+
+# scoring: a cluster-level success also credits the simpler variants (lines 1028–1049)</code></pre>
+  <code>combined_peeling_cluster_decoder_simulation</code> runs <code>num_iterations</code> random trials at a fixed
+  rate; <code>run_combined_..._varying_erasure_rate</code> sweeps the rate; <code>main()</code> (1185–1218) runs the
+  real PEG codes for 25 000 trials each and writes results to disk.
+</div>
+
+<div class="box note">
+  <div class="label">Heads-up before you run anything</div>
+  <code>peeling_cluster_decoder.py</code> ends with a bare <code>main()</code> call (line 1222) and <em>no</em>
+  <code>if __name__ == "__main__"</code> guard. So merely <code>import</code>-ing it kicks off the full
+  25 000-trial × 16-rate × 4-code simulation — which runs for a very long time. For interactive exploration, comment
+  out that final <code>main()</code>, or copy the module aside and strip it, before importing.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="run">14 · How to run it yourself</h2>
+
+<p>A tiny, fast experiment on the built-in toric code (after neutralising <code>main()</code> as noted above):</p>
+<pre><code>from Hypergraph_Product_Code_Construction_v3 import Toric3
+from peeling_cluster_decoder import combined_peeling_and_cluster_decoder
+
+E = {0, 1}                                   # erased qubits
+e = {0}                                      # the (hidden) true error
+s = Toric3.Hz_syn_index_set_for_X_err(e)     # syndrome the decoder receives
+pred, results = combined_peeling_and_cluster_decoder(Toric3, E, s)
+
+print(pred)                                  # {0}  — reconstructed error
+print(results)                               # {'total_dangling_checks_corrected': 2, ...}
+print(Toric3.Hz_syn_index_set_for_X_err(pred) == s)   # True — syndrome matches</code></pre>
+
+<p>To load a real code and run a short sweep:</p>
+<pre><code>from utilities import construct_HGP_code_from_classical_H_text_file
+from peeling_cluster_decoder import run_combined_peeling_cluster_decoder_varying_erasure_rate
+
+C625 = construct_HGP_code_from_classical_H_text_file(
+           "PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt")
+data = run_combined_peeling_cluster_decoder_varying_erasure_rate(
+           C625, max_erasure_rate=0.32, steps=16, num_iterations=200)
+print(data[-1]["failure_rate_peeling_M2_cluster"])</code></pre>
+
+<div class="box idea">
+  <div class="label">Mental model to keep</div>
+  Build a 2-D quantum code from two classical ones (§5). Noise erases a known set of qubits (§3). Peel off the easy
+  parts (§8), break cycles for free with the VH trick (§9), and only when truly stuck, carve the leftover into
+  clusters (§10) and solve that little tree of classical systems (§11–12). Repeat thousands of times to chart how
+  robust the code is (§13).
+</div>
+
+<div class="footer">
+  Generated as a study companion for the <strong>PPVH-Connolly</strong> repository
+  (Pruned-Peeling-and-VH-Decoder). Numbers in the examples were produced by running the code on the built-in
+  3×3 toric example, <code>HGP_code(Hrep3, Hrep3)</code> = [[18, 2, 3]].
+  Source paper: Connolly, Londe, Leverrier &amp; Delfosse, <em>Fast erasure decoder for a class of quantum LDPC
+  codes</em>, arXiv:2208.01002 (2022).
+</div>
+
+</div>
+</body>
+</html>
