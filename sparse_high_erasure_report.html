@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PPVH Decoder: Sparse vs Sparse+DFS high-erasure (0.30-0.45)</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: #57606a; margin: 0 0 18px; font-size: 14px; }
+  .note { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px;
+          padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+            padding: 18px 20px; margin: 0 0 22px; }
+  h2 { font-size: 19px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 16px 0 8px; color: #424a53; }
+  .muted { color: #8b949e; font-weight: 400; font-size: 14px; }
+  .charts { display: flex; flex-wrap: wrap; gap: 18px; }
+  .chartbox { flex: 1 1 320px; min-width: 300px; }
+  .chartbox h4 { font-size: 13.5px; margin: 0 0 6px; text-align: center; color: #1f2328; }
+  canvas { width: 100%; height: 280px; display: block; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin: 6px 0 0; font-size: 12.5px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 6px; }
+  th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; }
+  th { background: #f6f8fa; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sparse GF(2) GE vs Sparse + DFS &mdash; high-erasure regime (0.30 &rarr; 0.45)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). 200 trials per erasure rate, fixed RNG seed so both conditions decode the <strong>identical</strong> samples. Separate campaign; earlier reports/data are unaffected.</p>
+  <div class="note">
+    Pushes the erasure rate into the high regime where the cluster solver does most of the work. <strong>GE time is elimination only</strong> &mdash; the DFS reordering cost is measured separately, shown in its own chart and the summary table, and <strong>excluded</strong> from the GE-time chart. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).
+  </div>
+  <div id="sections"></div>
+</div>
+
+<script>
+const X_BY_CODE = {"Toric3": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001], "C_625": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001]};
+const TRIALS = 200;
+const DATA = {"Toric3": {"sparse": {"fr": [0.16, 0.13, 0.21, 0.15, 0.275, 0.275, 0.295, 0.255, 0.29, 0.31, 0.265, 0.37, 0.325, 0.34, 0.375, 0.45], "ge": [0.00015546600116067566, 0.0002610200044728117, 0.00017243499678443186, 0.0002398490014456911, 0.00031329100602306426, 0.0002782010033115512, 0.000319913997373078, 0.00036614099553844426, 0.00022973799059400335, 0.0004508179972617654, 0.0003389349949429743, 0.0004549349960143445, 0.00030156600587361027, 0.00045298899749468546, 0.0005931400100962492, 0.00036822300171479583], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.00031411678492077044, 0.00031792531000974123, 0.00031030358995849384, 0.00031995055504921763, 0.0003294587599793886, 0.00033510944997942714, 0.0003299655199953122, 0.00032788100986181235, 0.0003301116550301231, 0.00033950722497138485, 0.00034232990503369365, 0.0003459796050174191, 0.0003536943500330381, 0.0003517104200636823, 0.00035491888497745093, 0.00034669178501644637]}, "sparse_dfs": {"fr": [0.16, 0.13, 0.21, 0.15, 0.275, 0.275, 0.295, 0.255, 0.29, 0.31, 0.265, 0.37, 0.325, 0.34, 0.375, 0.45], "ge": [0.00014118100261839572, 0.00023201600924949162, 0.0001625299955776427, 0.00022868000996822957, 0.00028510798802017234, 0.00026577000062388834, 0.00029296498905750923, 0.00037851898923690896, 0.00021804499192512594, 0.0003753039909497602, 0.00030112600143183954, 0.00040602401531941723, 0.0002683590009837644, 0.0004244299889251124, 0.000552335995962494, 0.0003732050045073265], "re": [0.00017380599820171483, 0.00023678899378865026, 0.0001673600054346025, 0.00023546199554402847, 0.0003004830032296013, 0.0002827099960995838, 0.00030949200299801305, 0.00042356900667073205, 0.0002239460027340101, 0.00039115100298658945, 0.00031009399936010595, 0.0004211129853501916, 0.0002703620011743624, 0.00041945600423787255, 0.0005693319908459671, 0.00036772699604625814], "dt": [0.0003024310449927725, 0.0003149625150126667, 0.000308092455024962, 0.00031136396502915884, 0.00031797148508303506, 0.00032450566998704745, 0.00032260864496493015, 0.0003226488600284938, 0.0003194098299809411, 0.0003360313149278227, 0.00032606913003291994, 0.0003312319399901753, 0.00032786146499347524, 0.0003372347400181752, 0.000338206909937071, 0.00035679257492120085]}}, "C_625": {"sparse": {"fr": [0.03, 0.025, 0.055, 0.055, 0.095, 0.12, 0.205, 0.27, 0.425, 0.515, 0.705, 0.82, 0.89, 0.965, 0.98, 0.995], "ge": [0.0014351119971252047, 0.0012838879938499304, 0.0024936479985626647, 0.002421120012513711, 0.0032496730109414784, 0.0036687239917228, 0.0038927499972487567, 0.004306954993808176, 0.0038618779963144334, 0.0032062439968285616, 0.002538650001952192, 0.0016767500001151348, 0.0010809680043166736, 0.0005293010017339839, 0.00026349699874117505, 7.353800174314529e-05], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.03381499328508653, 0.03452213009994921, 0.03553816142007236, 0.03537427892000778, 0.036427780099947994, 0.03755555748991355, 0.03758340199500708, 0.037505388464915086, 0.03529365300006248, 0.035589851989952875, 0.03297635525496844, 0.030650257909937865, 0.02778330517498034, 0.02473769322512453, 0.024463738410004224, 0.023856264865053163]}, "sparse_dfs": {"fr": [0.035, 0.02, 0.045, 0.04, 0.1, 0.12, 0.21, 0.26, 0.43, 0.525, 0.7, 0.82, 0.89, 0.97, 0.98, 0.995], "ge": [0.001359990003038547, 0.0012284120075491956, 0.002272214003824047, 0.00226128701979178, 0.0031516159979219083, 0.0034997889979422325, 0.0034643760027393, 0.004036907990666805, 0.003728360003151465, 0.003171174010276445, 0.002488049998646602, 0.0014882749983371468, 0.0010628360014379723, 0.0005393990049924469, 0.00035804200342681725, 7.522700252593495e-05], "re": [0.0012062339974363567, 0.001096525995308184, 0.002034983001067303, 0.0020499139864114113, 0.0029423239993775496, 0.003099466997809941, 0.003126829995380831, 0.003717879004398128, 0.003319876002933597, 0.0028477509895310504, 0.0022916490052011795, 0.001354081001409213, 0.000899443999514915, 0.0004970669979229569, 0.00021336399549909402, 7.058799928927328e-05], "dt": [0.03404424159502924, 0.03492729123493518, 0.03406749364507959, 0.03620350022006278, 0.03727689558507336, 0.038214771359916994, 0.036443400410098546, 0.03788295029495203, 0.03647846953995213, 0.03628889958494255, 0.03313938777004296, 0.029301324909993126, 0.028240786810038117, 0.0258165631400243, 0.024575820620011655, 0.024304049349957495]}}};
+
+const CONDS = [
+  ["sparse", "Sparse GF(2) GE", "#2da44e"],
+  ["sparse_dfs", "Sparse GF(2) GE + DFS", "#d1242f"]
+];
+const CODES = [["Toric3", "18 qubits"], ["C_625", "625 qubits"]];
+
+function metricSeries(code, metric) {
+  const X = X_BY_CODE[code];
+  const scale = (metric === "fr") ? 1.0 : 1000.0; // times: seconds -> ms
+  const out = [];
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    out.push({ color, pts: X.map((x, i) => [x, DATA[code][cond][metric][i] * scale]) });
+  }
+  return out;
+}
+
+function drawChart(canvas, code, series) {
+  const X = X_BY_CODE[code];
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const mL = 54, mR = 12, mT = 12, mB = 34;
+  const pw = cssW - mL - mR, ph = cssH - mT - mB;
+  let yMax = 0;
+  series.forEach(s => s.pts.forEach(p => { if (p[1] > yMax) yMax = p[1]; }));
+  if (yMax <= 0) yMax = 1;
+  yMax *= 1.12;
+  const xMin = X[0], xMax = X[X.length - 1];
+  const sx = x => mL + (x - xMin) / (xMax - xMin) * pw;
+  const sy = y => mT + ph - (y / yMax) * ph;
+  ctx.strokeStyle = "#d0d7de"; ctx.lineWidth = 1; ctx.strokeRect(mL, mT, pw, ph);
+  ctx.font = "10px -apple-system, Segoe UI, sans-serif";
+  const yticks = 5;
+  for (let i = 0; i <= yticks; i++) {
+    const yv = yMax * i / yticks, py = sy(yv);
+    ctx.strokeStyle = "#eef1f4"; ctx.beginPath(); ctx.moveTo(mL, py); ctx.lineTo(mL + pw, py); ctx.stroke();
+    ctx.fillStyle = "#57606a"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(yv < 1 ? yv.toPrecision(2) : yv.toPrecision(3), mL - 5, py);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  X.forEach((xv, i) => { if (i % 2 === 0) { ctx.fillStyle = "#57606a"; ctx.fillText(xv.toFixed(2), sx(xv), mT + ph + 6); } });
+  ctx.fillStyle = "#424a53"; ctx.fillText("Erasure rate", mL + pw / 2, mT + ph + 19);
+  series.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    s.pts.forEach((p, i) => { const px = sx(p[0]), py = sy(p[1]); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    s.pts.forEach(p => { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 2.4, 0, Math.PI * 2); ctx.fill(); });
+  });
+}
+
+function summaryTable(code) {
+  const X = X_BY_CODE[code];
+  const last = X.length - 1;
+  const baseGe = DATA[code]["sparse"] ? DATA[code]["sparse"].ge[last] : null;
+  let rows = "";
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    const d = DATA[code][cond];
+    const ge = d.ge[last];
+    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
+    rows += "<tr>" +
+      "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
+      "<td>" + X[last].toFixed(2) + "</td>" +
+      "<td>" + d.fr[last].toFixed(4) + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
+      "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
+      "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
+      "</tr>";
+  }
+  return "<table><thead><tr><th>Condition</th><th>Erasure rate</th><th>Failure rate (full decoder)</th>" +
+    "<th>GE time / elimination only (ms)</th><th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
+    rows + "</tbody></table>";
+}
+
+function legendHtml() {
+  return "<div class='legend'>" + CONDS.map(([c, label, color]) =>
+    "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
+}
+
+function render() {
+  const container = document.getElementById("sections");
+  container.innerHTML = "";
+  for (const [code, qubits] of CODES) {
+    if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
+    const X = X_BY_CODE[code];
+    const sec = document.createElement("section");
+    sec.innerHTML =
+      "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
+      legendHtml() +
+      "<div class='charts'>" +
+        "<div class='chartbox'><h4>Failure rate vs erasure rate</h4><canvas data-code='" + code + "' data-metric='fr'></canvas></div>" +
+        "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
+        "<div class='chartbox'><h4>DFS reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
+      "</div>" +
+      "<h3>At the maximum erasure rate (" + X[X.length - 1].toFixed(2) + ")</h3>" +
+      summaryTable(code);
+    container.appendChild(sec);
+  }
+  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, cv.dataset.code, metricSeries(cv.dataset.code, cv.dataset.metric)));
+}
+
+window.addEventListener("load", render);
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>

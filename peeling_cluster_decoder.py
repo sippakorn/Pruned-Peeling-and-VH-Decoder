@@ -1387,6 +1387,55 @@ def experiment_dense_dfs_main():
         print()
 
 
+# Separate experiment campaign in the high-erasure regime (0.30 -> 0.45):
+# Sparse GF(2) GE vs Sparse GF(2) GE + DFS reordering. Uses fewer trials (200) since high
+# erasure rates are expensive. Writes its own data files tagged "HIGHERASURE_" so it never
+# overwrites earlier campaigns' files. The reported GE time excludes the DFS reordering time.
+
+def experiment_sparse_high_erasure_main():
+
+    print("Running high-erasure experiment: Sparse vs Sparse+DFS (erasure 0.30 -> 0.45, 200 trials/rate).")
+
+    num_trials = 200
+    seed = 12345
+    file_tag = "HIGHERASURE_"
+
+    # min=0.29, max=0.45, steps=16 -> evaluated rates are 0.30, 0.31, ..., 0.45 (inclusive).
+    min_erasure_rate = 0.29
+    max_erasure_rate = 0.45
+    steps = 16
+
+    named_codes = []
+    named_codes.append(("Toric3", Toric3))
+    named_codes.append(("C_625", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')))
+
+    all_results = {}
+    for condition in ["sparse", "sparse_dfs"]:
+        all_results[condition] = run_experiment(
+            condition, named_codes, max_erasure_rate=max_erasure_rate, steps=steps,
+            num_iterations=num_trials, min_erasure_rate=min_erasure_rate, seed=seed, file_tag=file_tag)
+
+    # Compact comparison at the highest erasure rate.
+    print()
+    print("=" * 78)
+    print("Sparse vs Sparse+DFS (high erasure) at the maximum erasure rate:")
+    print("Note: total_ge_time is elimination only; DFS reordering is in total_reorder_time.")
+    print("=" * 78)
+    for code_name, _ in named_codes:
+        print("Code:", code_name)
+        for condition in ["sparse", "sparse_dfs"]:
+            last = all_results[condition][code_name][-1]
+            print("  {0:<11s} erasure_rate={1:.4f}  failure_rate={2:.4f}  total_ge_time={3:.4e}s  reorder_time={4:.4e}s  ge_calls={5}".format(
+                condition,
+                last['erasure_rate'],
+                last['failure_rate_peeling_M2_cluster'],
+                last['total_ge_time'],
+                last.get('total_reorder_time', 0.0),
+                last['num_ge_calls']))
+        print()
+
+
 def main():
 
     print("Hello, world!")
@@ -1429,6 +1478,7 @@ if __name__ == "__main__":
     #   python3 peeling_cluster_decoder.py            -> quick three-condition experiment (default)
     #   python3 peeling_cluster_decoder.py quick      -> same as above
     #   python3 peeling_cluster_decoder.py densedfs   -> Dense vs Dense+DFS experiment (no sparse GE)
+    #   python3 peeling_cluster_decoder.py higherasure-> Sparse GE only, erasure 0.30->0.45, 200 trials
     #   python3 peeling_cluster_decoder.py full       -> original paper-scale job via main()
     #   python3 peeling_cluster_decoder.py <int>      -> original paper-scale array job (index = sys.argv[1])
     arg = sys.argv[1] if (len(sys.argv) > 1) else None
@@ -1436,5 +1486,7 @@ if __name__ == "__main__":
         main()
     elif (arg == "densedfs"):
         experiment_dense_dfs_main()
+    elif (arg == "higherasure"):
+        experiment_sparse_high_erasure_main()
     else:
         experiment_main()

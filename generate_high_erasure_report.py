@@ -1,16 +1,14 @@
-"""Generate a self-contained HTML report comparing the three decoder conditions.
+"""Generate an HTML report for the Sparse-GE high-erasure experiment (0.30 -> 0.45).
 
-Reads the per-condition results files written by peeling_cluster_decoder.py and
-renders an apple-to-apple comparison (same seed => identical erasure/error
-samples across conditions) as canvas line charts. No external dependencies
-(works offline), light theme.
+Separate experiment campaign: sparse GE only, in the high-erasure regime, 200
+trials per rate. Reads only the data files tagged "HIGHERASURE_" (written by
+peeling_cluster_decoder.py's experiment_sparse_high_erasure_main), so it does not
+touch or depend on any earlier campaign's files.
 
-Important: GE time shown here is ELIMINATION ONLY. The DFS reordering cost is
-tracked separately (total_reorder_time) and is excluded from the GE-time chart;
-it is reported on its own and in the summary table.
+GE time shown here is elimination only (no DFS reordering is used in this campaign).
 
-Run with:  python3 generate_comparison_report.py
-Output:    decoder_comparison_report.html
+Run with:  python3 generate_high_erasure_report.py
+Output:    sparse_high_erasure_report.html
 """
 
 import ast
@@ -18,38 +16,22 @@ import glob
 import json
 import os
 
-# (filename token, display label, color). Order = drawing/legend order.
+# Two conditions compared in this campaign. (ge_backend, ge_reorder) signature matches files.
 CONDITIONS = [
-    ("dense",      "Dense GF(2) GE",   "#1f6feb"),
-    ("sparse",     "Sparse GF(2) GE",  "#2da44e"),
-    ("sparse_dfs", "Sparse + DFS",     "#d1242f"),
+    ("sparse",     "Sparse GF(2) GE",       "#2da44e", ("sparse", None)),
+    ("sparse_dfs", "Sparse GF(2) GE + DFS", "#d1242f", ("sparse", "dfs")),
 ]
 
 CODES = [("Toric3", "18 qubits"), ("C_625", "625 qubits")]
 
-# Authoritative (ge_backend, ge_reorder) signature for each condition. Matching on
-# the file CONTENTS avoids the filename-glob ambiguity where "<code>_sparse_*"
-# also matches "<code>_sparse_dfs_*" files.
-CONDITION_SIGNATURE = {
-    "dense":      ("dense", None),
-    "sparse":     ("sparse", None),
-    "sparse_dfs": ("sparse", "dfs"),
-}
+FILE_GLOB = "{0}_*HIGHERASURE*trials_*.txt"
 
 
-# Filename markers belonging to OTHER experiment campaigns; their files must not be
-# picked up by this three-way (dense/sparse/sparse+dfs) report even though some share
-# the same (ge_backend, ge_reorder) signature.
-EXCLUDE_TAGS = ("DENSEEXP", "HIGHERASURE")
-
-
-def load_results_for(code, condition):
-    want_backend, want_reorder = CONDITION_SIGNATURE[condition]
+def load_results_for(code, signature):
+    want_backend, want_reorder = signature
     best_rows = None
     best_mtime = -1.0
-    for path in glob.glob("{0}_*trials_*.txt".format(code)):
-        if any(tag in os.path.basename(path) for tag in EXCLUDE_TAGS):
-            continue
+    for path in glob.glob(FILE_GLOB.format(code)):
         try:
             with open(path, "r") as f:
                 rows = [d for d in ast.literal_eval(f.read()) if isinstance(d, dict)]
@@ -67,27 +49,25 @@ def load_results_for(code, condition):
 
 
 def build_data():
-    """Return (data_dict, x_list, trials) for embedding in the HTML."""
     data = {}
-    x_list = None
+    x_by_code = {}
     trials = None
     for code, _ in CODES:
         data[code] = {}
-        for cond, _, _ in CONDITIONS:
-            rows = load_results_for(code, cond)
+        for cond, _, _, sig in CONDITIONS:
+            rows = load_results_for(code, sig)
             if not rows:
                 continue
-            if x_list is None:
-                x_list = [r["erasure_rate"] for r in rows]
+            x_by_code[code] = [r["erasure_rate"] for r in rows]
             if trials is None:
                 trials = rows[0].get("total_trials")
             data[code][cond] = {
                 "fr": [r["failure_rate_peeling_M2_cluster"] for r in rows],
-                "ge": [r["total_ge_time"] for r in rows],            # elimination only (seconds)
+                "ge": [r["total_ge_time"] for r in rows],               # elimination only (seconds)
                 "re": [r.get("total_reorder_time", 0.0) for r in rows],  # DFS reorder (seconds)
-                "dt": [r["mean_decode_time"] for r in rows],         # seconds
+                "dt": [r["mean_decode_time"] for r in rows],            # seconds
             }
-    return data, x_list, trials
+    return data, x_by_code, trials
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -95,7 +75,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>PPVH Decoder: Sparse GE / DFS apple-to-apple comparison</title>
+<title>PPVH Decoder: Sparse vs Sparse+DFS high-erasure (0.30-0.45)</title>
 <style>
   :root { color-scheme: light; }
   body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -124,42 +104,38 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>Sparse GE and DFS-Reorder &mdash; apple-to-apple comparison</h1>
-  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). __TRIALS__ trials per erasure rate, fixed RNG seed so all three conditions decode the <strong>identical</strong> erasure/error samples.</p>
+  <h1>Sparse GF(2) GE vs Sparse + DFS &mdash; high-erasure regime (0.30 &rarr; 0.45)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). __TRIALS__ trials per erasure rate, fixed RNG seed so both conditions decode the <strong>identical</strong> samples. Separate campaign; earlier reports/data are unaffected.</p>
   <div class="note">
-    Charts compare <strong>Sparse</strong> vs <strong>Sparse + DFS</strong> (Dense is omitted from the charts so the y-axis zooms into the sparse range; Dense remains in the summary table as the GE-time speedup baseline).
-    Because the seed is fixed, all conditions decode identical samples, so the failure-rate curves coincide except where DFS picks a different minimum-weight solution.
-    <strong>GE time is elimination only</strong> &mdash; the DFS reordering cost is measured separately and shown in its own chart and the summary table, so it is <strong>excluded</strong> from the GE-time comparison. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).
+    Pushes the erasure rate into the high regime where the cluster solver does most of the work. <strong>GE time is elimination only</strong> &mdash; the DFS reordering cost is measured separately, shown in its own chart and the summary table, and <strong>excluded</strong> from the GE-time chart. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).
   </div>
   <div id="sections"></div>
 </div>
 
 <script>
-const X = __X__;
+const X_BY_CODE = __XBYCODE__;
 const TRIALS = __TRIALS__;
 const DATA = __DATA__;
 
 const CONDS = [
-  ["dense", "Dense GF(2) GE", "#1f6feb"],
   ["sparse", "Sparse GF(2) GE", "#2da44e"],
-  ["sparse_dfs", "Sparse + DFS", "#d1242f"]
+  ["sparse_dfs", "Sparse GF(2) GE + DFS", "#d1242f"]
 ];
-// Conditions to PLOT in the charts/legend (Dense excluded by request; it remains
-// in the summary table as the GE-time speedup baseline).
-const PLOT_CONDS = CONDS.filter(c => c[0] !== "dense");
 const CODES = __CODES__;
 
 function metricSeries(code, metric) {
+  const X = X_BY_CODE[code];
   const scale = (metric === "fr") ? 1.0 : 1000.0; // times: seconds -> ms
   const out = [];
-  for (const [cond, label, color] of PLOT_CONDS) {
+  for (const [cond, label, color] of CONDS) {
     if (!DATA[code] || !DATA[code][cond]) continue;
     out.push({ color, pts: X.map((x, i) => [x, DATA[code][cond][metric][i] * scale]) });
   }
   return out;
 }
 
-function drawChart(canvas, series) {
+function drawChart(canvas, code, series) {
+  const X = X_BY_CODE[code];
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
   canvas.width = cssW * dpr; canvas.height = cssH * dpr;
@@ -197,29 +173,31 @@ function drawChart(canvas, series) {
 }
 
 function summaryTable(code) {
+  const X = X_BY_CODE[code];
   const last = X.length - 1;
-  const denseGe = DATA[code]["dense"] ? DATA[code]["dense"].ge[last] : null;
+  const baseGe = DATA[code]["sparse"] ? DATA[code]["sparse"].ge[last] : null;
   let rows = "";
   for (const [cond, label, color] of CONDS) {
     if (!DATA[code] || !DATA[code][cond]) continue;
     const d = DATA[code][cond];
     const ge = d.ge[last];
-    const speed = (ge > 0 && denseGe) ? " (" + (denseGe / ge).toFixed(1) + "x)" : "";
+    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
     rows += "<tr>" +
       "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
+      "<td>" + X[last].toFixed(2) + "</td>" +
       "<td>" + d.fr[last].toFixed(4) + "</td>" +
       "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
       "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
       "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
       "</tr>";
   }
-  return "<table><thead><tr><th>Condition</th><th>Failure rate (full decoder)</th>" +
+  return "<table><thead><tr><th>Condition</th><th>Erasure rate</th><th>Failure rate (full decoder)</th>" +
     "<th>GE time / elimination only (ms)</th><th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
     rows + "</tbody></table>";
 }
 
 function legendHtml() {
-  return "<div class='legend'>" + PLOT_CONDS.map(([c, label, color]) =>
+  return "<div class='legend'>" + CONDS.map(([c, label, color]) =>
     "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
 }
 
@@ -228,6 +206,7 @@ function render() {
   container.innerHTML = "";
   for (const [code, qubits] of CODES) {
     if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
+    const X = X_BY_CODE[code];
     const sec = document.createElement("section");
     sec.innerHTML =
       "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
@@ -242,7 +221,7 @@ function render() {
       summaryTable(code);
     container.appendChild(sec);
   }
-  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, metricSeries(cv.dataset.code, cv.dataset.metric)));
+  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, cv.dataset.code, metricSeries(cv.dataset.code, cv.dataset.metric)));
 }
 
 window.addEventListener("load", render);
@@ -254,18 +233,19 @@ window.addEventListener("resize", render);
 
 
 def main():
-    data, x_list, trials = build_data()
-    if x_list is None:
-        print("No result files found. Run the experiment first: python3 peeling_cluster_decoder.py")
+    data, x_by_code, trials = build_data()
+    if not x_by_code:
+        print("No HIGHERASURE result files found. Run the experiment first:")
+        print("  python3 peeling_cluster_decoder.py higherasure")
         return
 
     html = HTML_TEMPLATE
-    html = html.replace("__X__", json.dumps(x_list))
+    html = html.replace("__XBYCODE__", json.dumps(x_by_code))
     html = html.replace("__DATA__", json.dumps(data))
     html = html.replace("__CODES__", json.dumps(CODES))
     html = html.replace("__TRIALS__", str(trials))
 
-    out_path = "decoder_comparison_report.html"
+    out_path = "sparse_high_erasure_report.html"
     with open(out_path, "w") as f:
         f.write(html)
     print("Wrote", out_path, "(" + str(os.path.getsize(out_path)) + " bytes)")

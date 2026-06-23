@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Sparse GF(2) GE + DFS &mdash; pseudocode &amp; verification</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; line-height: 1.55; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-size: 25px; margin: 0 0 4px; }
+  h2 { font-size: 20px; margin: 30px 0 10px; border-bottom: 1px solid #d8dee4; padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 20px 0 8px; color: #424a53; }
+  .sub { color: #57606a; margin: 0 0 8px; font-size: 14px; }
+  p { font-size: 14.5px; }
+  code { background: #eff1f3; padding: 1px 5px; border-radius: 4px; font-size: 13px;
+         font-family: "SF Mono", Consolas, monospace; }
+  pre { background: #0d1117; color: #e6edf3; padding: 14px 16px; border-radius: 8px;
+        overflow-x: auto; font-size: 13px; line-height: 1.5;
+        font-family: "SF Mono", Consolas, monospace; }
+  pre .kw { color: #ff7b72; }
+  pre .cm { color: #8b949e; font-style: italic; }
+  pre .fn { color: #d2a8ff; }
+  pre .st { color: #a5d6ff; }
+  .idea { background: #ddf4ff; border: 1px solid #a8d4f0; border-left: 4px solid #1f6feb;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .note { background: #fff8e6; border: 1px solid #f0d9a0; border-left: 4px solid #d4a72c;
+          border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .ok { background: #e9f7ef; border: 1px solid #a7e0bf; border-left: 4px solid #2da44e;
+        border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 12px 0; }
+  th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f3f6; }
+  .fileref { font-family: "SF Mono", Consolas, monospace; font-size: 12.5px; color: #57606a;
+             margin: 0 0 6px; }
+  ul { font-size: 14.5px; }
+  .chk { list-style: none; padding-left: 0; }
+  .chk li { margin: 8px 0; padding-left: 26px; position: relative; }
+  .chk li:before { content: "\2713"; position: absolute; left: 0; color: #2da44e; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Sparse GF(2) Gaussian Elimination + DFS reordering</h1>
+<p class="sub">Pseudocode, design decisions, and a line-by-line map to the implementation &mdash; so you can verify the code matches what you intended. PPVH erasure decoder, arXiv:2208.01002.</p>
+
+<h2>1. Where this runs and what it solves</h2>
+<p>
+During decoding, after peeling (M=0,1,2) the remaining erasure is broken into clusters. Each cluster reduces to a
+small <strong>classical</strong> problem: given a binary parity-check matrix <code>H</code>, a syndrome vector
+<code>s</code>, and the set <code>E</code> of erased bit-columns, find a low-weight error vector <code>e</code> over GF(2) with
+<code>H&middot;e = s (mod 2)</code>, using only the erased columns.
+</p>
+<p class="fileref">utilities.py &middot; perform_classical_syndrome_analysis_with_erasure(...)  &mdash; the per-cluster chokepoint that dispatches to the backend.</p>
+<div class="idea">
+  <strong>Key idea.</strong> Represent each equation (matrix row) as a <strong>Python set of the column indices where it has a 1</strong>.
+  Over GF(2), adding two rows is just the <strong>symmetric difference</strong> (XOR) of their sets. The syndrome is carried as one extra
+  "augmented" column with the sentinel id <code>aug = num_bits</code>. Non-erased columns are never inserted (equivalent to zeroing them).
+</div>
+
+<h2>2. Plain Sparse GF(2) GE (the counterpart)</h2>
+<p class="fileref">utilities.py &middot; _sparse_solve_classical_syndrome_with_erasure(H, s, E, reorder=None)</p>
+<pre><span class="cm"># Inputs:  H (num_rows x num_bits), syndrome s, erased column set E, reorder flag</span>
+<span class="cm"># Output:  minimum-weight e with H&middot;e = s (mod 2), supported on erased columns</span>
+
+<span class="kw">function</span> <span class="fn">SPARSE_GE_SOLVE</span>(H, s, E, reorder):
+    num_rows, num_bits = shape(H)
+    aug = num_bits                       <span class="cm"># sentinel column id for the syndrome</span>
+    erased = { c <span class="kw">in</span> E : 0 &lt;= c &lt; num_bits }
+
+    <span class="cm"># (1) Build augmented rows as SETS of column ids (only the 1-entries)</span>
+    <span class="kw">for</span> r <span class="kw">in</span> 0 .. num_rows-1:
+        rows[r] = { c <span class="kw">in</span> erased : H[r][c] == 1 }
+        <span class="kw">if</span> s[r] == 1:  rows[r].add(aug)
+
+    <span class="cm"># (2) Choose the order in which columns are tried as pivots</span>
+    <span class="kw">if</span> reorder == <span class="st">"dfs"</span>:
+        col_order = <span class="fn">DFS_ORDER</span>(H, erased)        <span class="cm"># timed separately (see &sect;4)</span>
+    <span class="kw">else</span>:
+        col_order = sort_ascending(erased)      <span class="cm"># natural order = same result as dense</span>
+    candidates = col_order ++ [aug]             <span class="cm"># aug is tried LAST</span>
+
+    <span class="cm"># (3) Gauss-Jordan elimination over GF(2) using set XOR</span>
+    available = { 0 .. num_rows-1 }             <span class="cm"># rows not yet used as a pivot</span>
+    pivots = [] ; pivot_row_of = {}
+    <span class="kw">for</span> j <span class="kw">in</span> candidates:
+        p = first index in `available` whose rows[p] contains j
+        <span class="kw">if</span> p is None:  <span class="kw">continue</span>            <span class="cm"># column j is a FREE variable</span>
+        <span class="kw">if</span> j == aug:   <span class="kw">raise</span> INCONSISTENT   <span class="cm"># a "0 = 1" row -> no solution exists</span>
+        available.remove(p)
+        <span class="kw">for</span> every other row q != p with j <span class="kw">in</span> rows[q]:
+            rows[q] = rows[q] XOR rows[p]       <span class="cm"># symmetric difference, in place</span>
+        pivot_row_of[j] = rows[p] ; pivots.append(j)
+
+    <span class="cm"># (4) Minimum-weight read-off: free vars = 0; each pivot var = its reduced syndrome bit</span>
+    e = zero_vector(num_bits)
+    <span class="kw">for</span> j <span class="kw">in</span> pivots:
+        <span class="kw">if</span> aug <span class="kw">in</span> pivot_row_of[j]:  e[j] = 1
+    <span class="kw">return</span> e
+</pre>
+
+<div class="note">
+  <strong>Why this equals the original dense solver (when <code>reorder=None</code>).</strong> The reduced row echelon form of a matrix
+  has a <em>unique</em> set of pivot columns and a unique reduced augmented column once the column-visitation order is fixed.
+  With ascending column order, the sparse routine therefore selects the same pivots and reads off the <em>identical</em> minimum-weight
+  solution as the dense Gauss-Jordan (<code>standard_form</code>). This was confirmed empirically: dense vs sparse give identical failure
+  counts on every seeded trial.
+</div>
+
+<h2>3. DFS reordering (the new part)</h2>
+<p class="fileref">utilities.py &middot; dfs_order(H, E)</p>
+<p>
+Build the bipartite Tanner subgraph induced by the erased columns and the check-rows that touch them. Two columns are
+<strong>neighbors</strong> when they share at least one check (row). DFS over this graph yields a column-visitation order, which is then used
+as the pivot-selection order in step (2) above.
+</p>
+<pre><span class="kw">function</span> <span class="fn">DFS_ORDER</span>(H, E):
+    erased = sort_ascending({ c <span class="kw">in</span> E : 0 &lt;= c &lt; num_bits })
+
+    <span class="cm"># adjacency restricted to erased columns</span>
+    col_to_rows[c] = { r : H[r][c] == 1 }              <span class="kw">for</span> c <span class="kw">in</span> erased
+    row_to_cols[r] = { c <span class="kw">in</span> erased : H[r][c] == 1 }
+
+    visited = {} ; order = []
+    <span class="kw">for</span> start <span class="kw">in</span> erased:                 <span class="cm"># ascending starts -> also covers disconnected pieces</span>
+        <span class="kw">if</span> start <span class="kw">in</span> visited:  <span class="kw">continue</span>
+        stack = [start]
+        <span class="kw">while</span> stack not empty:
+            c = stack.pop()
+            <span class="kw">if</span> c <span class="kw">in</span> visited:  <span class="kw">continue</span>
+            visited.add(c) ; order.append(c)
+            neighbors = union( row_to_cols[r] <span class="kw">for</span> r <span class="kw">in</span> col_to_rows[c] )
+            <span class="kw">for</span> nc <span class="kw">in</span> sort_descending(neighbors):   <span class="cm"># push high->low so LOWEST index pops first</span>
+                <span class="kw">if</span> nc not <span class="kw">in</span> visited:  stack.push(nc)
+    <span class="kw">return</span> order
+</pre>
+<div class="idea">
+  <strong>Sparse GE + DFS</strong> is exactly <code>SPARSE_GE_SOLVE</code> with <code>reorder="dfs"</code>: the only change is that step (2) uses the DFS
+  column order instead of ascending order. Everything else (set-XOR elimination, free-variable handling, inconsistency check, min-weight read-off)
+  is identical.
+</div>
+<div class="note">
+  <strong>What DFS changes &mdash; and what it does not.</strong> A different column order changes <em>which</em> columns become pivots, hence
+  <em>which</em> minimum-weight solution is returned (this can shift the logical-error outcome slightly). It does <strong>not</strong> change whether a
+  solution exists, and it does not change correctness: every returned <code>e</code> still satisfies <code>H&middot;e = s</code>.
+</div>
+
+<h2>4. Timing: reordering is excluded from GE time</h2>
+<p class="fileref">utilities.py &middot; perform_classical_syndrome_analysis_with_erasure(...) and SOLVER_STATS</p>
+<pre><span class="kw">function</span> <span class="fn">PERFORM_CLASSICAL_SOLVE</span>(H, s, E):        <span class="cm"># per-cluster chokepoint</span>
+    stats.ge_calls += 1
+    backend, reorder = SOLVER_CONFIG
+    reorder_before = stats.reorder_time
+    t0 = now()
+    <span class="kw">try</span>:
+        e = <span class="fn">SPARSE_GE_SOLVE</span>(H,s,E,reorder)   <span class="kw">if</span> backend==<span class="st">"sparse"</span>
+            <span class="kw">else</span> <span class="fn">DENSE_SOLVE</span>(H,s,E,reorder)
+    <span class="kw">finally</span>:
+        elapsed = now() - t0
+        this_reorder = stats.reorder_time - reorder_before
+        stats.ge_time += (elapsed - this_reorder)   <span class="cm"># &lt;-- GE time EXCLUDES reordering</span>
+    assert (H&middot;e mod 2) == s
+    <span class="kw">return</span> e
+
+<span class="cm"># inside SPARSE_GE_SOLVE / DENSE_SOLVE, only the DFS_ORDER call is timed into reorder_time:</span>
+    t = now(); col_order = <span class="fn">DFS_ORDER</span>(...); stats.reorder_time += now() - t
+</pre>
+<div class="ok">
+  <strong>So in every report:</strong> <code>total_ge_time</code> is the elimination time <em>only</em>; the DFS cost lives in the separate
+  <code>total_reorder_time</code> and is subtracted out. That is exactly the "exclude reordering time" behavior used in the comparison graphs.
+</div>
+
+<h2>5. Worked micro-example (verify the elimination by hand)</h2>
+<p>
+3-bit repetition code <code>H = [[1,1,0],[0,1,1],[1,0,1]]</code> (rows = {0,1}, {1,2}, {0,2}), erased <code>E = {0,1,2}</code>,
+syndrome <code>s = (1,1,0)</code>. Sentinel <code>aug = 3</code>. Natural order, <code>candidates = [0,1,2,3]</code>.
+</p>
+<table>
+<tr><th>Step</th><th>Action</th><th>rows after step</th></tr>
+<tr><td>build</td><td>rows from H and s</td><td>r0={0,1,3}, r1={1,2,3}, r2={0,2}</td></tr>
+<tr><td>j=0</td><td>pivot r0; XOR into r2 (contains 0)</td><td>r0={0,1,3}, r1={1,2,3}, r2={1,2,3}</td></tr>
+<tr><td>j=1</td><td>pivot r1; XOR into r0 and r2 (contain 1)</td><td>r0={0,2}, r1={1,2,3}, r2={ }</td></tr>
+<tr><td>j=2</td><td>no available row has 2 &rarr; <strong>free variable</strong>, skip</td><td>(unchanged)</td></tr>
+<tr><td>j=3 (aug)</td><td>no available row has aug &rarr; <strong>consistent</strong></td><td>(unchanged)</td></tr>
+</table>
+<p>
+Read-off: pivots = [0, 1]. <code>pivot_row_of[0] = r0 = {0,2}</code> &rarr; aug absent &rarr; <code>e[0]=0</code>.
+<code>pivot_row_of[1] = r1 = {1,2,3}</code> &rarr; aug present &rarr; <code>e[1]=1</code>. Free <code>e[2]=0</code>.
+Result <code>e = (0,1,0)</code>, weight 1. Check: <code>H&middot;e = (0&oplus;1, 1&oplus;0, 0&oplus;0) = (1,1,0) = s</code>. &#10003;
+</p>
+
+<h2>6. Map: pseudocode &rarr; implementation</h2>
+<table>
+<tr><th>Pseudocode</th><th>Function (utilities.py)</th><th>Notes</th></tr>
+<tr><td>PERFORM_CLASSICAL_SOLVE</td><td><code>perform_classical_syndrome_analysis_with_erasure</code></td><td>Dispatch + timing (excludes reorder); final <code>H&middot;e==s</code> assert.</td></tr>
+<tr><td>SPARSE_GE_SOLVE</td><td><code>_sparse_solve_classical_syndrome_with_erasure</code></td><td>Steps (1)-(4); set-XOR via <code>rows[q] ^= pivot_set</code>.</td></tr>
+<tr><td>DFS_ORDER</td><td><code>dfs_order</code></td><td>Bipartite column graph; iterative stack DFS.</td></tr>
+<tr><td>DENSE_SOLVE</td><td><code>_dense_solve_classical_syndrome_with_erasure</code></td><td>Counterpart; with <code>reorder="dfs"</code> it permutes columns of the augmented matrix into DFS order before <code>standard_form</code>.</td></tr>
+<tr><td>SOLVER_CONFIG / SOLVER_STATS</td><td>module-level dicts</td><td><code>backend</code>/<code>reorder</code> selection; <code>ge_time</code>, <code>reorder_time</code>, <code>ge_calls</code>.</td></tr>
+</table>
+
+<h2>7. Verification checklist (does it match your intent?)</h2>
+<ul class="chk">
+  <li>Rows stored as sets of 1-columns; GF(2) addition = symmetric difference (<code>^=</code>).</li>
+  <li>Syndrome carried as a sentinel column <code>aug = num_bits</code>, always tried last.</li>
+  <li>Only erased columns participate; non-erased columns are excluded (zeroed).</li>
+  <li>A column with no available 1-row is treated as a free variable (skipped).</li>
+  <li>A pivot landing on the augmented column means the system is inconsistent &rarr; raise (caller treats as "no solution").</li>
+  <li>Minimum-weight choice = all free variables set to 0; each pivot variable = its reduced augmented bit.</li>
+  <li>DFS = depth-first over the cluster's column graph (columns adjacent iff they share a check); neighbors pushed high&rarr;low so the lowest index is explored first; disconnected pieces covered by iterating ascending start columns.</li>
+  <li>Sparse + DFS differs from plain Sparse only in the pivot-column order; correctness is identical and guarded by the <code>H&middot;e==s</code> check.</li>
+  <li>GE time excludes DFS reordering: only <code>dfs_order</code> is timed into <code>reorder_time</code>, which is subtracted from <code>ge_time</code>.</li>
+</ul>
+
+<div class="note">
+  <strong>One thing worth confirming against your expectation:</strong> the minimum-weight read-off is the same heuristic as the original paper code
+  &mdash; set all free variables to 0 rather than searching for the globally minimum-weight coset representative. If you intended a true minimum-weight
+  search, that is a deliberate difference to flag.
+</div>
+
+</div>
+</body>
+</html>
