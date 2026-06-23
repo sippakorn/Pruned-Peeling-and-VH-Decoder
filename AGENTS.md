@@ -133,6 +133,29 @@ s = Toric3.Hz_syn_index_set_for_X_err({0})
 pred, results = combined_peeling_and_cluster_decoder(Toric3, {0,1}, s)   # -> {0}, dangling=2
 ```
 
+## Peeling -> Sparse GE experiment (added 2026-06-23)
+
+Tests the proposal: does DFS reordering speed up the sparse-GE residual solve? Two campaigns exist:
+
+- **OLD / cascade** (`experiment_sparse_high_erasure_main`, tag `HIGHERASURE_`, report
+  `sparse_high_erasure_report.html`): runs the FULL cascade (`combined_peeling_and_cluster_decoder`:
+  M0 peeling -> M1 -> M2 -> cluster decoder) and only swaps the GE backend inside the *per-cluster*
+  solves. This does NOT match the "jump straight from peeling to GE" proposal.
+- **NEW / peeling->GE** (`experiment_peeling_ge_high_erasure_main`, CLI `peelge`, tag `PEELGEHIGH_`,
+  report `peeling_ge_high_erasure_report.html`): the correct minimal pipeline. `peeling_then_ge_decoder`
+  does M=0 dangling-check peeling ONLY, then feeds the whole residual straight into ONE
+  `perform_classical_syndrome_analysis_with_erasure(HGP_code.Hz, s_vec, E)`. Backend/reorder come from
+  `utilities.SOLVER_CONFIG`; the only step between peeling and GE is the optional DFS reorder. Conditions:
+  `sparse` (natural order) vs `sparse_dfs` (DFS reorder). High regime 0.30->0.45, 200 trials, seed 12345.
+  Run: `python peeling_cluster_decoder.py peelge` then `python generate_peeling_ge_report.py`.
+
+**Result (this run):** summed over all rates+codes, DFS makes elimination ~1.04x faster but the reorder
+cost makes the end-to-end pipeline ~1.59x SLOWER -> hypothesis NOT supported in this regime. (DFS also
+slightly changes the failure rate because it selects a different valid coset representative of the solve.)
+
+**Env gotcha:** workspace is a WSL share but the agent shell is Windows PowerShell. Calling `wsl.exe`
+wedges the shell. Instead run with Windows Python over the UNC path (`numpy` was pip-installed for it).
+
 ## Open / offered but NOT done (potential next steps)
 
 - Add a §12 HTML note explicitly stating "dense GF(2) Gauss-Jordan; no sparse solver" + the fill-in

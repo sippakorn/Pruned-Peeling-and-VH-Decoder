@@ -1436,6 +1436,273 @@ def experiment_sparse_high_erasure_main():
         print()
 
 
+# =====================================================================================
+# PEELING -> SPARSE GE PIPELINE  (the experiment this campaign is actually meant to test)
+# =====================================================================================
+#
+# combined_peeling_and_cluster_decoder runs the FULL cascade (M=0 peeling -> M=1 erased
+# generators -> M=2 erased generator products -> cluster decoder), and only swaps the GE
+# backend deep inside the per-cluster classical solves. That is NOT the proposal.
+#
+# The proposal is the MINIMAL pipeline:
+#     1. Plain peeling (M=0 dangling checks only) to shrink the system for free.
+#     2. Jump straight to ONE GF(2) Gaussian elimination over the residual Hz system
+#        (all remaining erased qubits at once -- the "residual graph").
+#
+# The ONLY optional step between peeling and GE is the DFS column reordering. There is no
+# M=1, no M=2, and no cluster-tree decomposition. The GE backend ("dense"/"sparse") and the
+# reorder strategy (None/"dfs") are taken from utilities.SOLVER_CONFIG, so:
+#     condition "sparse"     -> peeling then plain Sparse GE   (natural column order)
+#     condition "sparse_dfs" -> peeling then DFS-reorder then Sparse GE  (the proposal)
+
+def peeling_then_ge_decoder(HGP_code, E_index_set_input, s_index_set_input):
+
+    predicted_e_index_set = set()
+    E_index_set = E_index_set_input.copy()
+    s_index_set = s_index_set_input.copy()
+
+    # Local, mutable copies of the checks so we can track erased-qubit membership while peeling.
+    list_of_checks = copy.deepcopy(HGP_code.list_of_checks)
+
+    # Seed the set of dangling checks (h=1,v=0 OR h=0,v=1) from the initial erasure.
+    set_of_dangling_check_indices = set()
+    for qubit_index in E_index_set:
+        for check_index in HGP_code.list_of_checks_per_qubit[qubit_index]:
+            check = list_of_checks[check_index]
+            check.add_erased_qubits(E_index_set)
+            if check.is_dangling():
+                set_of_dangling_check_indices.add(check_index)
+
+    results_dict = {'total_dangling_checks_corrected': 0, 'used_ge': 0}
+
+    # ---- Step 1: plain peeling (M=0 dangling checks ONLY) -------------------------------
+    while (set_of_dangling_check_indices != set()):
+        dangling_check_index = set_of_dangling_check_indices.pop()
+        dangling_check = list_of_checks[dangling_check_index]
+
+        if (dangling_check.is_dangling()):
+            # The lone erased qubit adjacent to this dangling check.
+            qubit_index = dangling_check.horizontal_erased_qubits.union(
+                dangling_check.vertical_erased_qubits).pop()
+
+            # If the check is triggered, flip this qubit and the syndrome bits it touches.
+            if (dangling_check_index in s_index_set):
+                if (qubit_index in predicted_e_index_set):
+                    predicted_e_index_set.discard(qubit_index)
+                else:
+                    predicted_e_index_set.add(qubit_index)
+                for check_index in HGP_code.list_of_checks_per_qubit[qubit_index]:
+                    if (check_index in s_index_set):
+                        s_index_set.discard(check_index)
+                    else:
+                        s_index_set.add(check_index)
+
+            # Remove the corrected qubit from the erasure and update adjacent checks.
+            E_index_set.discard(qubit_index)
+            for check_index in HGP_code.list_of_checks_per_qubit[qubit_index]:
+                adjacent_check = list_of_checks[check_index]
+                adjacent_check.remove_erased_qubit(qubit_index)
+                if adjacent_check.is_dangling():
+                    set_of_dangling_check_indices.add(adjacent_check.index)
+                else:
+                    set_of_dangling_check_indices.discard(adjacent_check.index)
+
+            results_dict['total_dangling_checks_corrected'] += 1
+
+    # ---- Step 2: jump straight from peeling to ONE Sparse GE on the residual graph -----
+    # Whatever peeling could not resolve is handed, in a single shot, to GF(2) GE over Hz
+    # restricted to the residual erased columns. The (optional) DFS reordering inside
+    # perform_classical_syndrome_analysis_with_erasure is the only extra step before GE.
+    if (s_index_set != set()) or (E_index_set != set()):
+        s_vector = np.zeros(HGP_code.num_checks, dtype=int)
+        for check_index in s_index_set:
+            s_vector[check_index] = 1
+
+        predicted_ge_e = perform_classical_syndrome_analysis_with_erasure(
+            HGP_code.Hz, s_vector, E_index_set)
+
+        # GE only sets bits inside the residual erasure, disjoint from peeling-corrected qubits.
+        for qubit_index in np.flatnonzero(predicted_ge_e):
+            predicted_e_index_set.add(int(qubit_index))
+        results_dict['used_ge'] = 1
+
+    return predicted_e_index_set, results_dict
+
+
+
+# Monte-Carlo harness for the peeling -> GE pipeline above.
+# Mirrors combined_peeling_cluster_decoder_simulation (same seeding, same instrumentation),
+# but a trial is simply a success unless the residual is a non-trivial logical error or the
+# GE solve is inconsistent. total_ge_time is elimination only; DFS reorder time is separate.
+
+def peeling_ge_decoder_simulation(HGP_code, num_iterations, erasure_rate, seed=None):
+
+    # Seed so different solver conditions decode the IDENTICAL random samples.
+    if (seed is not None):
+        random.seed(seed)
+        np.random.seed(seed)
+
+    num_successes = 0
+    num_true_decoding_failures = 0
+    num_non_trivial_logical_errors = 0
+
+    total_decode_time = 0.0
+    total_ge_time = 0.0          # elimination only (excludes DFS reordering)
+    total_reorder_time = 0.0     # DFS reordering only
+    total_ge_calls = 0
+
+    simulation_results_dict = {}
+    progress_count = max(1, int(num_iterations/2))
+
+    for iterations in range(num_iterations):
+        E_index_set, e_index_set = generate_random_erasure_and_error_index_sets(HGP_code.num_qubits, erasure_rate, 0.5)
+        s_index_set = HGP_code.Hz_syn_index_set_for_X_err(e_index_set)
+
+        reset_solver_stats()
+        trial_start_time = time.perf_counter()
+        try:
+            predicted_e_index_set, _ = peeling_then_ge_decoder(HGP_code, E_index_set, s_index_set)
+            total_e_index_set = e_index_set.symmetric_difference(predicted_e_index_set)
+            if HGP_code.is_non_trivial_X_logical_error_index_set(total_e_index_set):
+                num_non_trivial_logical_errors += 1
+            else:
+                num_successes += 1
+        except:
+            num_true_decoding_failures += 1
+
+        total_decode_time += (time.perf_counter() - trial_start_time)
+        ge_stats = snapshot_solver_stats()
+        total_ge_time += ge_stats["ge_time"]
+        total_reorder_time += ge_stats["reorder_time"]
+        total_ge_calls += ge_stats["ge_calls"]
+
+        if ((iterations+1) % progress_count == 0):
+            print("Current progress: ", iterations+1, " simulations completed at ", erasure_rate, " erasure rate.")
+
+    num_total_failures = num_true_decoding_failures + num_non_trivial_logical_errors
+
+    simulation_results_dict['total_trials'] = num_iterations
+    simulation_results_dict['erasure_rate'] = erasure_rate
+    simulation_results_dict['num_true_decoder_failures'] = num_true_decoding_failures
+    simulation_results_dict['num_non_trivial_logical_errors'] = num_non_trivial_logical_errors
+    simulation_results_dict['num_total_failures'] = num_total_failures
+    simulation_results_dict['num_total_successes'] = num_successes
+    simulation_results_dict['failure_rate'] = num_total_failures/float(num_iterations)
+
+    simulation_results_dict['ge_backend'] = utilities.SOLVER_CONFIG['backend']
+    simulation_results_dict['ge_reorder'] = utilities.SOLVER_CONFIG['reorder']
+
+    simulation_results_dict['total_decode_time'] = total_decode_time
+    simulation_results_dict['mean_decode_time'] = total_decode_time/float(num_iterations)
+    simulation_results_dict['total_ge_time'] = total_ge_time
+    simulation_results_dict['total_reorder_time'] = total_reorder_time
+    simulation_results_dict['num_ge_calls'] = total_ge_calls
+    simulation_results_dict['mean_ge_time_per_call'] = (
+        total_ge_time/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
+
+    return simulation_results_dict
+
+
+
+# Sweep the peeling -> GE pipeline across erasure rates (same seeding scheme as the cascade sweep).
+
+def run_peeling_ge_decoder_varying_erasure_rate(HGP_code, max_erasure_rate, steps, num_iterations, min_erasure_rate=0, seed=None):
+
+    list_of_decoder_performance_dicts = []
+    step_size = (max_erasure_rate - min_erasure_rate)/float(steps)
+    erasure_rate = min_erasure_rate
+    step_index = 0
+
+    while (erasure_rate < max_erasure_rate):
+        erasure_rate += step_size
+        step_seed = (seed + step_index) if (seed is not None) else None
+        simulation_results_dict = peeling_ge_decoder_simulation(HGP_code, num_iterations, erasure_rate, seed=step_seed)
+        list_of_decoder_performance_dicts.append(simulation_results_dict)
+        step_index += 1
+
+    return list_of_decoder_performance_dicts
+
+
+
+# Run the peeling -> GE sweep for one solver condition over a list of codes, writing one file per code.
+
+def run_peeling_ge_experiment(condition, list_of_named_codes, max_erasure_rate, steps, num_iterations,
+                              min_erasure_rate, seed, file_tag, write_files=True):
+
+    if (condition not in EXPERIMENT_CONDITIONS):
+        raise Exception("Unknown condition '"+str(condition)+"'; expected one of "+str(list(EXPERIMENT_CONDITIONS.keys())))
+
+    config = EXPERIMENT_CONDITIONS[condition]
+    set_solver_config(backend=config["backend"], reorder=config["reorder"])
+
+    print("=== Running PEELING->GE condition '"+condition+"' (backend="+str(config["backend"])
+          +", reorder="+str(config["reorder"])+") ===")
+
+    results_by_code = {}
+    for code_name, HGP_code_object in list_of_named_codes:
+        print("  - Code:", code_name, "("+str(HGP_code_object.num_qubits)+" qubits)")
+        perf_list = run_peeling_ge_decoder_varying_erasure_rate(
+            HGP_code_object, max_erasure_rate, steps, num_iterations,
+            min_erasure_rate=min_erasure_rate, seed=seed)
+        results_by_code[code_name] = perf_list
+
+        if write_files:
+            file_name = code_name+"_"+condition+"_"+file_tag+str(num_iterations)+"trials_"+str(date.today())
+            written = write_list_of_performance_dictionaries_to_file(
+                HGP_code_object, perf_list, ArrayJob=False, file_name=file_name)
+            print("    wrote:", written)
+
+    return results_by_code
+
+
+
+# Separate campaign: peeling -> Sparse GE vs peeling -> DFS-reorder -> Sparse GE, high-erasure (0.30 -> 0.45).
+# Writes its own data files tagged "PEELGEHIGH_" so it never overwrites earlier campaigns' files.
+
+def experiment_peeling_ge_high_erasure_main():
+
+    print("Running PEELING->GE high-erasure experiment: plain Sparse GE vs Sparse GE + DFS (erasure 0.30 -> 0.45, 200 trials/rate).")
+
+    num_trials = 200
+    seed = 12345
+    file_tag = "PEELGEHIGH_"
+
+    # min=0.29, max=0.45, steps=16 -> evaluated rates are 0.30, 0.31, ..., 0.45 (inclusive).
+    min_erasure_rate = 0.29
+    max_erasure_rate = 0.45
+    steps = 16
+
+    named_codes = []
+    named_codes.append(("Toric3", Toric3))
+    named_codes.append(("C_625", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')))
+
+    all_results = {}
+    for condition in ["sparse", "sparse_dfs"]:
+        all_results[condition] = run_peeling_ge_experiment(
+            condition, named_codes, max_erasure_rate, steps, num_trials,
+            min_erasure_rate, seed, file_tag)
+
+    print()
+    print("=" * 78)
+    print("PEELING->GE: plain Sparse GE vs Sparse GE + DFS (high erasure) at the maximum erasure rate:")
+    print("Note: total_ge_time is elimination only; DFS reordering is in total_reorder_time.")
+    print("=" * 78)
+    for code_name, _ in named_codes:
+        print("Code:", code_name)
+        for condition in ["sparse", "sparse_dfs"]:
+            last = all_results[condition][code_name][-1]
+            print("  {0:<11s} erasure_rate={1:.4f}  failure_rate={2:.4f}  total_ge_time={3:.4e}s  reorder_time={4:.4e}s  ge_calls={5}".format(
+                condition,
+                last['erasure_rate'],
+                last['failure_rate'],
+                last['total_ge_time'],
+                last.get('total_reorder_time', 0.0),
+                last['num_ge_calls']))
+        print()
+
+
+
 def main():
 
     print("Hello, world!")
@@ -1478,7 +1745,8 @@ if __name__ == "__main__":
     #   python3 peeling_cluster_decoder.py            -> quick three-condition experiment (default)
     #   python3 peeling_cluster_decoder.py quick      -> same as above
     #   python3 peeling_cluster_decoder.py densedfs   -> Dense vs Dense+DFS experiment (no sparse GE)
-    #   python3 peeling_cluster_decoder.py higherasure-> Sparse GE only, erasure 0.30->0.45, 200 trials
+    #   python3 peeling_cluster_decoder.py higherasure-> (cascade) Sparse vs Sparse+DFS, erasure 0.30->0.45, 200 trials
+    #   python3 peeling_cluster_decoder.py peelge     -> (peeling->GE) plain Sparse GE vs Sparse GE+DFS, 0.30->0.45, 200 trials
     #   python3 peeling_cluster_decoder.py full       -> original paper-scale job via main()
     #   python3 peeling_cluster_decoder.py <int>      -> original paper-scale array job (index = sys.argv[1])
     arg = sys.argv[1] if (len(sys.argv) > 1) else None
@@ -1488,5 +1756,7 @@ if __name__ == "__main__":
         experiment_dense_dfs_main()
     elif (arg == "higherasure"):
         experiment_sparse_high_erasure_main()
+    elif (arg == "peelge"):
+        experiment_peeling_ge_high_erasure_main()
     else:
         experiment_main()
