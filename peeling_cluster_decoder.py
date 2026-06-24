@@ -1661,9 +1661,9 @@ def run_peeling_ge_experiment(condition, list_of_named_codes, max_erasure_rate, 
 
 def experiment_peeling_ge_high_erasure_main():
 
-    print("Running PEELING->GE high-erasure experiment: plain Sparse GE vs Sparse GE + DFS (erasure 0.30 -> 0.45, 200 trials/rate).")
+    print("Running PEELING->GE high-erasure experiment: plain Sparse GE vs Sparse GE + DFS (erasure 0.30 -> 0.45, 10000 trials/rate).")
 
-    num_trials = 200
+    num_trials = 10000
     seed = 12345
     file_tag = "PEELGEHIGH_"
 
@@ -1672,16 +1672,26 @@ def experiment_peeling_ge_high_erasure_main():
     max_erasure_rate = 0.45
     steps = 16
 
+    # Exploring the n1600 code family only (Toric/C_625 removed from this campaign).
     named_codes = []
-    named_codes.append(("Toric3", Toric3))
-    named_codes.append(("C_625", construct_HGP_code_from_classical_H_text_file(
-        'PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt')))
+    named_codes.append(("C_1600", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')))
 
+    # The two peeling -> GE conditions under test (tag PEELGEHIGH_).
     all_results = {}
     for condition in ["sparse", "sparse_dfs"]:
         all_results[condition] = run_peeling_ge_experiment(
             condition, named_codes, max_erasure_rate, steps, num_trials,
             min_erasure_rate, seed, file_tag)
+
+    # Baseline: original paper cascade (Peeling -> VH -> Cluster) with dense GE swapped for
+    # sparse GF(2) GE and NO DFS. Written under the HIGHERASURE_ tag (backend sparse, reorder
+    # None) so generate_peeling_ge_report.py picks it up as the baseline curve. Same seed /
+    # codes / rates / trials as above, so it decodes the identical samples.
+    baseline_results = run_experiment(
+        "sparse", named_codes, max_erasure_rate=max_erasure_rate, steps=steps,
+        num_iterations=num_trials, min_erasure_rate=min_erasure_rate, seed=seed,
+        file_tag="HIGHERASURE_")
 
     print()
     print("=" * 78)
@@ -1699,6 +1709,15 @@ def experiment_peeling_ge_high_erasure_main():
                 last['total_ge_time'],
                 last.get('total_reorder_time', 0.0),
                 last['num_ge_calls']))
+        # Cascade baseline (sparse GE, no DFS).
+        last_base = baseline_results[code_name][-1]
+        print("  {0:<11s} erasure_rate={1:.4f}  failure_rate={2:.4f}  total_ge_time={3:.4e}s  reorder_time={4:.4e}s  ge_calls={5}".format(
+            "baseline",
+            last_base['erasure_rate'],
+            last_base['failure_rate_peeling_M2_cluster'],
+            last_base['total_ge_time'],
+            last_base.get('total_reorder_time', 0.0),
+            last_base['num_ge_calls']))
         print()
 
 

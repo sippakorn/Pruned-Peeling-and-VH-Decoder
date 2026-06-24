@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>PPVH: Peeling -> Sparse GE vs Peeling -> DFS -> Sparse GE (0.30-0.45)</title>
+<title>PPVH Decoder: Peeling -> GE pipeline (high-erasure 0.30-0.45)</title>
 <style>
   :root { color-scheme: light; }
   body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -12,12 +12,7 @@
   h1 { font-size: 24px; margin: 0 0 4px; }
   .sub { color: #57606a; margin: 0 0 18px; font-size: 14px; }
   .note { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px;
-          padding: 12px 16px; font-size: 14px; margin: 0 0 18px; line-height: 1.5; }
-  .pipe { background: #eef4ff; border: 1px solid #c5d7f5; border-radius: 8px;
-          padding: 12px 16px; font-size: 14px; margin: 0 0 18px; line-height: 1.55; }
-  .pipe code { background: #dde8fb; padding: 1px 5px; border-radius: 4px; }
-  .verdict { background: #ffeef0; border: 1px solid #f3c2c8; border-radius: 8px;
-             padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.55; }
+          padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
   section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
             padding: 18px 20px; margin: 0 0 22px; }
   h2 { font-size: 19px; margin: 0 0 6px; }
@@ -33,55 +28,29 @@
   table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 6px; }
   th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; }
   th { background: #f6f8fa; }
+  .missing { color: #8b949e; font-style: italic; font-size: 13.5px; margin-top: 8px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Peeling &rarr; Sparse GE &nbsp;vs&nbsp; Peeling &rarr; DFS &rarr; Sparse GE</h1>
-  <p class="sub">PPVH erasure decoder (arXiv:2208.01002) &mdash; high-erasure regime (0.30 &rarr; 0.45). 200 trials per rate, fixed RNG seed so both conditions decode the <strong>identical</strong> samples.</p>
-
-  <div class="pipe">
-    <strong>Pipeline under test (the proposal).</strong> Both conditions run the <em>minimal</em> decoder: plain peeling
-    (M=0 dangling checks only) to shrink the system for free, then the entire residual graph is handed to
-    <strong>one</strong> GF(2) Gaussian elimination over <code>Hz</code>. We deliberately skip everything in between
-    &mdash; no M=1 erased generators, no M=2 generator products, no cluster-tree decomposition. The <em>only</em> extra
-    step before GE is the DFS column reordering:
-    <br/>&nbsp;&nbsp;&bull; <strong>Peeling &rarr; Sparse GE</strong>: residual solved in natural column order.
-    <br/>&nbsp;&nbsp;&bull; <strong>Peeling &rarr; DFS &rarr; Sparse GE</strong>: residual columns reordered by DFS, then the same Sparse GE.
-  </div>
-
+  <h1>Peeling &rarr; GE pipeline &mdash; high-erasure regime (0.30 &rarr; 0.45)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). 10000 trials per erasure rate, fixed RNG seed so all conditions decode the <strong>identical</strong> samples.</p>
   <div class="note">
-    The hypothesis is that DFS reordering makes the Sparse GE solve <strong>faster</strong>. To test this fairly,
-    <strong>GE time is elimination only</strong> (reordering excluded) and the DFS reordering cost is measured and shown
-    <strong>separately</strong>. The "GE + reorder (total)" chart is the practically relevant comparison, since the
-    reordering must be paid for on every solve. Times are in milliseconds (GE / reorder / total are summed over all
-    trials; decode time is the per-trial average). This is a separate campaign &mdash; the earlier report
-    (<code>sparse_high_erasure_report.html</code>) and its data are left untouched.
+    <strong>Pipeline under test:</strong> plain M=0 peeling, then a <strong>single global GF(2) Gaussian elimination over the residual Hz system</strong> (all remaining erased qubits at once) &mdash; no M=1, no M=2, no cluster-tree decomposition. The only optional step between peeling and GE is the DFS column reordering.<br/>
+    <strong>Baseline:</strong> the original paper decoder (full cascade &mdash; Peeling &rarr; VH &rarr; Cluster) with the <strong>only</strong> change being dense GE replaced by sparse GF(2) GE. The baseline uses <strong>no DFS</strong>.<br/>
+    <strong>GE time is elimination only</strong>; DFS reordering is measured separately and excluded from the GE-time chart. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).<br/>
+    The baseline reuses the seed-matched <code>HIGHERASURE_</code> cascade data (identical samples; see the generator docstring).
   </div>
-
-  <div class="verdict" id="verdict"></div>
-
   <div id="sections"></div>
 </div>
 
 <script>
-const X_BY_CODE = {"Toric3": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001], "C_625": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001]};
-const TRIALS = 200;
-const DATA = {"Toric3": {"sparse": {"fr": [0.115, 0.105, 0.155, 0.11, 0.195, 0.205, 0.21, 0.19, 0.2, 0.25, 0.215, 0.275, 0.26, 0.27, 0.265, 0.345], "ge": [0.0007087230260367505, 0.000669218999973964, 0.0007621160330018029, 0.0008482800476485863, 0.001040481984091457, 0.0010896930252783932, 0.001208494017191697, 0.0010936179387499578, 0.001340279974101577, 0.0013166329517844133, 0.0011761860005208291, 0.0015287230125977658, 0.001296270995226223, 0.0015708449864177965, 0.0016416800062870607, 0.00208153497078456], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "tot": [0.0007087230260367505, 0.000669218999973964, 0.0007621160330018029, 0.0008482800476485863, 0.001040481984091457, 0.0010896930252783932, 0.001208494017191697, 0.0010936179387499578, 0.001340279974101577, 0.0013166329517844133, 0.0011761860005208291, 0.0015287230125977658, 0.001296270995226223, 0.0015708449864177965, 0.0016416800062870607, 0.00208153497078456], "dt": [0.00015150016522966325, 0.00013480890000209912, 0.0001347719349723775, 0.00014983073011535453, 0.00015040785019664326, 0.00014824011992459418, 0.00014745175005373312, 0.0001493320900044637, 0.00015919555000436957, 0.0001530889949572156, 0.00014293844938947586, 0.00015067541502503446, 0.00014905684016412125, 0.000165964109946799, 0.0001605327200741158, 0.00016085020997707032]}, "sparse_dfs": {"fr": [0.105, 0.1, 0.15, 0.105, 0.185, 0.21, 0.205, 0.2, 0.205, 0.235, 0.22, 0.275, 0.245, 0.27, 0.285, 0.35], "ge": [0.0006617310355068184, 0.0006610819764318876, 0.0007687789839110337, 0.0007303630409296602, 0.0009515489582554437, 0.0011374110108590685, 0.0012272040257812478, 0.0010911029967246577, 0.0012366281007416546, 0.0014231269888114184, 0.0011914760470972396, 0.0016104170063044876, 0.0013238119790912606, 0.0015200790003291331, 0.0015653979498893023, 0.0018759880404104479], "re": [0.0006097790173953399, 0.0005805600303574465, 0.0006994190189288929, 0.0006748649902874604, 0.0008656630452605896, 0.0010331689554732293, 0.0011374929817975499, 0.001002561992208939, 0.001189881942991633, 0.00127131898625521, 0.0011444789633969776, 0.0016216930089285597, 0.001236714015249163, 0.001455941986932885, 0.0015165880467975512, 0.0019084069645032287], "tot": [0.0012715100529021583, 0.0012416420067893341, 0.0014681980028399266, 0.0014052280312171206, 0.0018172120035160333, 0.0021705799663322978, 0.0023646970075787976, 0.0020936649889335968, 0.0024265100437332876, 0.0026944459750666283, 0.0023359550104942173, 0.0032321100152330473, 0.0025605259943404235, 0.002976020987262018, 0.0030819859966868535, 0.0037843950049136765], "dt": [0.00015194806510407944, 0.00015191874514130176, 0.00015542999019089622, 0.0001558385949465446, 0.00015394579022540711, 0.00016339706970029512, 0.00016269981999357695, 0.000163165649973962, 0.00016959055006736889, 0.00017660176017670893, 0.00016843974979565245, 0.00017553044021042296, 0.00016405579452111852, 0.0001759499654508545, 0.0001639067198993871, 0.00017160278035589728]}}, "C_625": {"sparse": {"fr": [0.01, 0.015, 0.035, 0.035, 0.035, 0.05, 0.05, 0.095, 0.06, 0.085, 0.09, 0.155, 0.14, 0.195, 0.235, 0.285], "ge": [0.019964683007856365, 0.018151868003769778, 0.032442740026453976, 0.03457117200741777, 0.05638494401500793, 0.062241451028967276, 0.11264387499250006, 0.13706081997952424, 0.28552296708949143, 0.36981958197429776, 0.6137420409650076, 0.7988799429804203, 0.9857674320082879, 1.1681955550302519, 1.329121980983473, 1.3916516179961036], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "tot": [0.019964683007856365, 0.018151868003769778, 0.032442740026453976, 0.03457117200741777, 0.05638494401500793, 0.062241451028967276, 0.11264387499250006, 0.13706081997952424, 0.28552296708949143, 0.36981958197429776, 0.6137420409650076, 0.7988799429804203, 0.9857674320082879, 1.1681955550302519, 1.329121980983473, 1.3916516179961036], "dt": [0.005596967009660147, 0.005484935915264941, 0.00585721414998261, 0.005645016090275021, 0.006009150684949418, 0.0060182802551571515, 0.006245868319929286, 0.0062261851799848954, 0.007075996449857485, 0.007663313614939398, 0.008828974775351526, 0.009785632039929625, 0.010721602674857422, 0.011539461734755604, 0.012490459455220844, 0.012722153000104298]}, "sparse_dfs": {"fr": [0.015, 0.01, 0.025, 0.015, 0.035, 0.045, 0.055, 0.09, 0.075, 0.085, 0.09, 0.135, 0.15, 0.22, 0.225, 0.27], "ge": [0.01908213601564057, 0.017735759014612995, 0.03054615800647298, 0.03445448698766995, 0.05305577893159352, 0.06042413007526193, 0.10963760603772243, 0.14284698897972703, 0.28649638997012516, 0.3764043279152247, 0.5925306180142798, 0.812878609955078, 1.0209471599300741, 1.2107912739447784, 1.3614417449716711, 1.4493433158422704], "re": [0.007595698996738065, 0.006846193988167215, 0.012439011006790679, 0.015026727021904662, 0.02306429101008689, 0.02627179898263421, 0.05220612996345153, 0.06917504699958954, 0.14213029898382956, 0.1782692820415832, 0.29120640401379205, 0.398729089043627, 0.5155338070326252, 0.5949789069782128, 0.6385001030212152, 0.6498689840445877], "tot": [0.026677835012378637, 0.02458195300278021, 0.04298516901326366, 0.049481214009574614, 0.07612006994168041, 0.08669592905789614, 0.16184373600117397, 0.21202203597931657, 0.4286266889539547, 0.5546736099568079, 0.8837370220280718, 1.211607698998705, 1.5364809669626993, 1.8057701809229911, 1.9999418479928863, 2.099212299886858], "dt": [0.005341575464699417, 0.005447322105173953, 0.0056772410700068575, 0.0057034533551996, 0.005823919070135162, 0.0058761059997414124, 0.006287566519895336, 0.00666179785541317, 0.00775584468494344, 0.008438074844962102, 0.010178058845085616, 0.011905893729963282, 0.013515542299901427, 0.01489088960490335, 0.015821081694957682, 0.016304795434734842]}}};
+const X_BY_CODE = {"C_1600": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001]};
+const TRIALS = 10000;
+const DATA = {"C_1600": {"peel_sparse": {"fr": [0.0134, 0.0204, 0.0225, 0.0283, 0.0394, 0.0442, 0.0508, 0.0648, 0.0742, 0.0954, 0.1148, 0.145, 0.1686, 0.211, 0.2515, 0.3151], "ge": [1.987923638895154, 2.435461709879746, 3.2359480119230284, 4.065885585900105, 5.201825309992273, 6.684404184001323, 8.797129384784057, 12.564291928181774, 26.277630104945274, 62.87274578735014, 141.65214552401085, 244.04379972513925, 336.3773977401652, 409.1355698431835, 474.9530509859469, 526.241669499992], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.012745771427783256, 0.012974575186099901, 0.013355812066563885, 0.013507311310281876, 0.013790653257996383, 0.014108272041783129, 0.014450527727299413, 0.014893163606122835, 0.016528785609410263, 0.020209834711415534, 0.027714988117996473, 0.03802498117490104, 0.047053028298391295, 0.05412847278929403, 0.0607870512650894, 0.06586571745711335]}, "peel_sparse_dfs": {"fr": [0.0139, 0.02, 0.0223, 0.0297, 0.0386, 0.0432, 0.0502, 0.0654, 0.0744, 0.0984, 0.1152, 0.1449, 0.1693, 0.2116, 0.2505, 0.3168], "ge": [1.9553630091468222, 2.282258602910588, 2.999928675013507, 3.757655657831492, 5.06709946609044, 6.626262814621441, 8.621317955745326, 13.271618193895847, 27.70429887085993, 65.46820695749193, 152.94325499814659, 261.2326789022409, 368.6605076571941, 451.97548944083246, 528.8485075730132, 598.1682728280466], "re": [0.7774641078794957, 0.924776162035414, 1.238699753968831, 1.5819216831332596, 2.191552397049236, 2.9368218841227645, 3.878349519061885, 6.20643663518058, 13.157707473237679, 29.952186060279928, 69.1025389087481, 113.77538826489763, 154.18012595892287, 173.9325419731831, 192.49771988280918, 204.54525948299852], "dt": [0.013066858920000595, 0.012875625711603061, 0.013176738377200672, 0.013269666807816247, 0.014130438661611334, 0.01466318332520459, 0.015210714581999128, 0.016661411655207486, 0.01886870759709236, 0.024015045159497823, 0.036845490022510786, 0.05211388415509136, 0.06692550855241243, 0.07682468230671911, 0.08635056632830455, 0.09443160571979715]}, "cascade_sparse": {"fr": [0.0184, 0.0287, 0.0351, 0.0498, 0.0728, 0.0949, 0.1309, 0.1806, 0.2663, 0.417, 0.6263, 0.8157, 0.9354, 0.9848, 0.998, 0.9998], "ge": [0.03868887600765447, 0.0468176288959512, 0.06696321401250316, 0.0871626468579052, 0.11290161389479181, 0.14242547086905688, 0.1775904373062076, 0.21373555906757247, 0.24882606870960444, 0.23484684400318656, 0.18741061426408123, 0.10843625792767853, 0.043316570088791195, 0.013357302043004893, 0.0022451589684351347, 0.00010426399967400357], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.08906622794759424, 0.09117063981275897, 0.09327604487777717, 0.09561330404073451, 0.09754826099666315, 0.09967777213905793, 0.10187324636743288, 0.10359386226998177, 0.10414050702463137, 0.1016104623417843, 0.09335536064887201, 0.08305241970617935, 0.07383090833921596, 0.06742802673298139, 0.06486187487943608, 0.06292404345885079]}}};
 
-const CONDS = [
-  ["sparse", "Peeling -> Sparse GE", "#2da44e"],
-  ["sparse_dfs", "Peeling -> DFS -> Sparse GE", "#d1242f"]
-];
-const CODES = [["Toric3", "18 qubits"], ["C_625", "625 qubits"]];
-
-const METRICS = [
-  ["fr",  "Failure rate vs erasure rate"],
-  ["ge",  "GE time / elimination only (ms)"],
-  ["re",  "DFS reorder time (ms)"],
-  ["tot", "GE + reorder (total) (ms)"],
-  ["dt",  "Mean decode time (ms)"]
-];
+const CONDS = [["peel_sparse", "Peeling \u2192 Sparse GE", "#2da44e"], ["peel_sparse_dfs", "Peeling \u2192 DFS \u2192 Sparse GE", "#d1242f"], ["cascade_sparse", "Peeling \u2192 VH \u2192 Cluster (Sparse GE) [baseline]", "#0969da"]];
+const CODES = [["C_1600", "1600 qubits"]];
 
 function metricSeries(code, metric) {
   const X = X_BY_CODE[code];
@@ -135,27 +104,25 @@ function drawChart(canvas, code, series) {
 function summaryTable(code) {
   const X = X_BY_CODE[code];
   const last = X.length - 1;
-  const baseGe = DATA[code]["sparse"] ? DATA[code]["sparse"].ge[last] : null;
-  const baseTot = DATA[code]["sparse"] ? DATA[code]["sparse"].tot[last] : null;
+  // Speedup baseline is the plain Peeling -> Sparse GE GE time.
+  const baseGe = (DATA[code]["peel_sparse"]) ? DATA[code]["peel_sparse"].ge[last] : null;
   let rows = "";
   for (const [cond, label, color] of CONDS) {
     if (!DATA[code] || !DATA[code][cond]) continue;
     const d = DATA[code][cond];
-    const ge = d.ge[last], tot = d.tot[last];
-    const geSpeed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
-    const totSpeed = (tot > 0 && baseTot) ? " (" + (baseTot / tot).toFixed(2) + "x)" : "";
+    const ge = d.ge[last];
+    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
     rows += "<tr>" +
       "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
       "<td>" + X[last].toFixed(2) + "</td>" +
-      "<td>" + d.fr[last].toFixed(4) + "</td>" +
-      "<td>" + (ge * 1000).toFixed(3) + geSpeed + "</td>" +
+      "<td>" + (d.fr[last] != null ? d.fr[last].toFixed(4) : "&mdash;") + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
       "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
-      "<td>" + (tot * 1000).toFixed(3) + totSpeed + "</td>" +
       "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
       "</tr>";
   }
   return "<table><thead><tr><th>Condition</th><th>Erasure rate</th><th>Failure rate</th>" +
-    "<th>GE / elimination only (ms)</th><th>DFS reorder (ms)</th><th>GE + reorder total (ms)</th><th>Mean decode (ms)</th></tr></thead><tbody>" +
+    "<th>GE time / elimination only (ms)</th><th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
     rows + "</tbody></table>";
 }
 
@@ -164,49 +131,29 @@ function legendHtml() {
     "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
 }
 
-// Aggregate verdict: compare GE-only and GE+reorder totals summed across all rates and codes.
-function buildVerdict() {
-  let geBase = 0, geDfs = 0, totBase = 0, totDfs = 0, have = false;
-  for (const [code] of CODES) {
-    if (!DATA[code] || !DATA[code]["sparse"] || !DATA[code]["sparse_dfs"]) continue;
-    have = true;
-    const b = DATA[code]["sparse"], d = DATA[code]["sparse_dfs"];
-    for (let i = 0; i < b.ge.length; i++) {
-      geBase += b.ge[i]; geDfs += d.ge[i];
-      totBase += b.tot[i]; totDfs += d.tot[i];
-    }
-  }
-  if (!have) return "No PEELGEHIGH data files found. Run: <code>python peeling_cluster_decoder.py peelge</code>";
-  const geRatio = geDfs > 0 ? (geBase / geDfs) : 0;     // >1 means DFS elimination faster
-  const totRatio = totDfs > 0 ? (totBase / totDfs) : 0; // >1 means DFS total faster
-  const elimVerb = geRatio >= 1.0 ? ("about " + geRatio.toFixed(2) + "x faster")
-                                  : ("about " + (1 / geRatio).toFixed(2) + "x slower");
-  const totVerb = totRatio >= 1.0 ? ("about " + totRatio.toFixed(2) + "x faster")
-                                  : ("about " + (1 / totRatio).toFixed(2) + "x slower");
-  const supported = totRatio > 1.0;
-  return "<strong>Verdict (summed over all rates and codes).</strong> DFS reordering makes the <em>elimination</em> " +
-    elimVerb + ", but once the reordering cost is included the DFS condition is " + totVerb +
-    " end-to-end. The hypothesis that DFS reordering speeds up the sparse-GE residual solve is therefore <strong>" +
-    (supported ? "supported" : "not supported") + "</strong> in this regime: any elimination saving is outweighed by " +
-    "the cost of computing the ordering.";
-}
-
 function render() {
-  document.getElementById("verdict").innerHTML = buildVerdict();
   const container = document.getElementById("sections");
   container.innerHTML = "";
   for (const [code, qubits] of CODES) {
     if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
     const X = X_BY_CODE[code];
-    const sec = document.createElement("section");
-    let chartHtml = "";
-    for (const [m, title] of METRICS) {
-      chartHtml += "<div class='chartbox'><h4>" + title + "</h4><canvas data-code='" + code + "' data-metric='" + m + "'></canvas></div>";
+    const present = CONDS.filter(([c]) => DATA[code][c]).map(([c]) => c);
+    const missing = CONDS.filter(([c]) => !DATA[code][c]);
+    let missingHtml = "";
+    if (missing.length > 0) {
+      missingHtml = "<p class='missing'>Missing data for: " + missing.map(([c, label]) => label).join(", ") + "</p>";
     }
+    const sec = document.createElement("section");
     sec.innerHTML =
       "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
       legendHtml() +
-      "<div class='charts'>" + chartHtml + "</div>" +
+      "<div class='charts'>" +
+        "<div class='chartbox'><h4>Failure rate vs erasure rate</h4><canvas data-code='" + code + "' data-metric='fr'></canvas></div>" +
+        "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
+        "<div class='chartbox'><h4>DFS reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
+      "</div>" +
+      missingHtml +
       "<h3>At the maximum erasure rate (" + X[X.length - 1].toFixed(2) + ")</h3>" +
       summaryTable(code);
     container.appendChild(sec);

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sparse GE vs Dense GE — How they differ</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2430; --muted:#5c6675;
+    --blue:#2563eb; --green:#0a8f5f; --amber:#b7791f; --pink:#c81e63; --violet:#6d28d9;
+    --line:#e2e6ec;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:40px 24px 120px}
+  header.hero{
+    border-bottom:1px solid var(--line); padding-bottom:26px; margin-bottom:10px;
+  }
+  h1{font-size:32px; line-height:1.2; margin:0 0 8px}
+  h1 .sub{display:block; font-size:16px; color:var(--muted); font-weight:400; margin-top:8px}
+  h2{font-size:25px; margin:54px 0 6px; padding-top:16px; border-top:1px solid var(--line)}
+  h3{font-size:20px; margin:34px 0 6px; color:var(--blue)}
+  h4{font-size:16px; margin:20px 0 4px; color:var(--violet); letter-spacing:.3px}
+  p{margin:10px 0}
+  a{color:var(--blue)}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.92em;
+       background:#f1f3f7; border:1px solid var(--line); border-radius:5px; padding:1px 5px}
+  .lead{font-size:18px; color:#3a4452}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px;
+       border:1px solid var(--line); color:var(--muted); margin-right:6px}
+  /* boxes */
+  .box{border-radius:12px; padding:16px 18px; margin:16px 0; border:1px solid var(--line); background:var(--panel)}
+  .box .label{font-size:12px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:8px}
+  .idea{border-left:4px solid var(--blue)}      .idea .label{color:var(--blue)}
+  .pnp{border-left:4px solid var(--amber); background:#fff8e6}   .pnp .label{color:var(--amber)}
+  .codept{border-left:4px solid var(--green)}   .codept .label{color:var(--green)}
+  .note{border-left:4px solid var(--pink); background:#fdeef3}  .note .label{color:var(--pink)}
+  pre{margin:10px 0 4px; background:#f1f3f7; border:1px solid var(--line); border-radius:8px;
+      padding:12px 14px; overflow-x:auto; font-size:13.5px; line-height:1.5}
+  pre code{background:none; border:none; padding:0}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .matrix{display:inline-block; background:#f1f3f7; border:1px solid var(--line);
+          border-radius:8px; padding:8px 14px; margin:6px 8px 6px 0; white-space:pre; font-size:14px}
+  .fileref{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+           color:var(--green); display:block; margin-bottom:6px}
+  .toc{columns:2; column-gap:30px; font-size:14.5px}
+  .toc a{display:block; padding:3px 0; text-decoration:none; color:#344256}
+  .toc a:hover{color:var(--blue)}
+  .pill{color:var(--amber)}
+  table.params{border-collapse:collapse; margin:14px 0; font-size:14px; width:100%}
+  table.params td, table.params th{border:1px solid var(--line); padding:7px 11px; text-align:left; vertical-align:top}
+  table.params th{background:#f1f3f7; color:var(--muted)}
+  .kbd{font-family:monospace; background:#f1f3f7; border:1px solid var(--line); border-bottom-width:2px;
+       border-radius:5px; padding:1px 6px; font-size:.9em}
+  hr{border:none; border-top:1px solid var(--line); margin:30px 0}
+  .footer{color:var(--muted); font-size:13px; margin-top:60px; border-top:1px solid var(--line); padding-top:18px}
+  .grid{color:var(--violet)}
+  .small{font-size:13.5px; color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Sparse&nbsp;GE vs Dense&nbsp;GE
+    <span class="sub">Two implementations of the <em>same</em> Gaussian elimination over GF(2) used to solve a
+    cluster (or the whole residual) inside the PPVH erasure decoder. Same answer, different data structure,
+    different cost. Each idea is refreshed, given a tiny pen&#8209;and&#8209;paper example, then linked to the exact code.</span>
+  </h1>
+  <span class="tag">GF(2) linear algebra</span>
+  <span class="tag">Gaussian elimination</span>
+  <span class="tag">Sparse vs dense</span>
+  <span class="tag">Python + NumPy</span>
+</header>
+
+<p class="lead">Both solvers answer one question: given a parity-check matrix
+<span class="mono">H</span>, a syndrome <span class="mono">s</span>, and the set of <strong>erased</strong>
+columns, find an error <span class="mono">e</span> (living only on erased columns) with
+<span class="mono">H&middot;e = s (mod 2)</span>. They reduce the system to row echelon form and read off a
+minimum-weight solution. The <strong>only</strong> difference is how the matrix is stored and which entries get
+touched during elimination &mdash; <em>dense</em> keeps every 0 and 1 in a full array, <em>sparse</em> keeps only
+the positions of the 1s.</p>
+
+<div class="box idea">
+  <div class="label">The 30-second picture</div>
+  A row of <span class="mono">H</span> over GF(2) is just a set of column positions that hold a 1. Adding two rows
+  (the core step of elimination) is <strong>XOR</strong>: shared 1s cancel. <strong>Dense GE</strong> represents a row
+  as a full array of 0/1 and XORs whole rows (zeros included). <strong>Sparse GE</strong> represents a row as the
+  <em>set of its 1-positions</em> and XORs by <strong>symmetric difference</strong> of those sets &mdash; it never
+  stores or visits a zero. With the same column order both produce the identical reduced form and the identical
+  minimum-weight solution; they only differ in memory and speed.
+</div>
+
+<h3>Contents</h3>
+<nav class="toc">
+  <a href="#same">1 &middot; Same problem, same answer</a>
+  <a href="#dense">2 &middot; Dense GE: a full 0/1 array</a>
+  <a href="#sparse">3 &middot; Sparse GE: rows as sets of 1-positions</a>
+  <a href="#trace">4 &middot; One system, both ways (hand trace)</a>
+  <a href="#table">5 &middot; Side-by-side comparison</a>
+  <a href="#fillin">6 &middot; Fill-in and why DFS reordering exists</a>
+  <a href="#where">7 &middot; Where each is used in this project</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="same">1 &middot; Same problem, same answer</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Both backends solve <span class="mono">H&middot;e = s (mod 2)</span> restricted to the erased columns by computing a
+  <strong>reduced row echelon form (RREF)</strong> of the augmented matrix <span class="mono">[H | s]</span>, then
+  setting every free variable to 0 and reading the pivot variables straight off the reduced syndrome column. That
+  &ldquo;free variables = 0&rdquo; choice is the <strong>minimum-weight</strong> particular solution. For a fixed
+  column-visitation order the set of pivot columns and the reduced augmented column are <em>unique</em>, so
+  <strong>dense and sparse return exactly the same error vector</strong>. The data structure changes the
+  <em>cost</em>, never the result.
+</div>
+
+<div class="box note">
+  <div class="label">Heads-up</div>
+  &ldquo;Sparse GE&rdquo; here means a <em>custom, pure-Python</em> GF(2) elimination over a list-of-sets &mdash; there is
+  no <code>scipy.sparse</code>, no external solver. &ldquo;Dense GE&rdquo; is the project&rsquo;s original
+  <code>standard_form</code> Gauss&ndash;Jordan over a NumPy array. Both are exact mod-2 arithmetic: no floating point,
+  no rounding.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dense">2 &middot; Dense GE: a full 0/1 array</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The matrix is a dense <span class="mono">m &times; n</span> NumPy array of 0s and 1s. Non-erased columns are explicitly
+  set to 0, the syndrome is appended as an extra column, and a Gauss&ndash;Jordan sweep clears each pivot column from
+  <em>every</em> row at once. A pivot step (a) <strong>swaps</strong> the pivot row into place, then (b) XORs the pivot
+  row into all other rows that have a 1 in the pivot column &mdash; implemented as one big outer-product XOR over the
+  whole right-hand block, zeros and all.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  Three checks over six columns; every entry is physically stored, including the zeros:
+  <div class="matrix">      c0 c1 c2 c3 c4 c5 | s
+row0:  1  1  0  0  0  0 | 1
+row1:  0  1  1  0  0  0 | 0
+row2:  0  0  1  1  0  0 | 1</div>
+  To clear column c1 below row0 you would XOR row0 into any row holding a 1 in c1, rewriting the <em>entire</em> row
+  array (all six columns plus the syndrome), even the long run of 0s on the right. Cost scales with the full width
+  <span class="mono">n</span>, not with how many 1s the row actually has.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py &middot; standard_form(...)</span>
+  The pivot swap and the whole-block XOR are the heart of the dense RREF:
+<pre><code>k = np.argmax(M[i:, j]) + i      # find a pivot (a 1) in column j
+...
+temp = np.copy(M[k]); M[k] = M[i]; M[i] = temp   # physically SWAP rows
+aijn = M[i, j:]                  # pivot row, columns j..n
+col  = np.copy(M[:, j]); col[i] = 0   # everyone else with a 1 in column j
+flip = np.outer(col, aijn)       # full m x (n-j) block of XOR updates
+M[:, j:] = M[:, j:] ^ flip       # entrywise XOR over the whole block</code></pre>
+  <span class="fileref">utilities.py &middot; _dense_solve_classical_syndrome_with_erasure(...)</span>
+  The wrapper zeroes the non-erased columns, augments with the syndrome, calls <code>standard_form</code>, and reads
+  off the min-weight solution (free variables left at 0):
+<pre><code>H_zeroed = H.copy()
+for bit_index in range(num_bits):
+    if (bit_index not in E_index_set):
+        H_zeroed[:, bit_index] = 0          # drop non-erased columns
+H_aug = np.hstack((H_zeroed, s[:, np.newaxis]))   # augment [H | s]
+H_aug_rref, A, pivot_indices = standard_form(H_aug)
+# pivot variables take the reduced syndrome value; free variables stay 0</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sparse">3 &middot; Sparse GE: rows as sets of 1-positions</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Each row is a Python <strong>set</strong> containing only the column indices where it has a 1 (the syndrome bit is a
+  sentinel column index). Non-erased columns are simply never inserted &mdash; there is nothing to &ldquo;zero out&rdquo;.
+  Adding one row to another over GF(2) is the <strong>symmetric difference</strong> of the two sets
+  (<span class="mono">^=</span>): positions present in both cancel, the rest survive. Pivoting does not move data &mdash;
+  it just <em>selects</em> the first available row that contains the pivot column. Work scales with the number of 1s,
+  not with <span class="mono">m &times; n</span>.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper</div>
+  The same three rows from &sect;2, now as sets of 1-positions (syndrome 1s become the sentinel column <span class="mono">s</span>):
+  <div class="matrix">row0 = { c0, c1, s }
+row1 = { c1, c2 }
+row2 = { c2, c3, s }</div>
+  Eliminate c1 from row1 by XOR-ing row0 into it &mdash; a symmetric difference:
+  <div class="matrix">row1 ^= row0
+{ c1, c2 } &#8710; { c0, c1, s }  =  { c0, c2, s }
+            (c1 is in both &rarr; cancels)</div>
+  Only the handful of touched indices change; the absent columns (c4, c5) are never even mentioned.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py &middot; _sparse_solve_classical_syndrome_with_erasure(...)</span>
+  Build each row as a set of erased-column indices (plus the syndrome sentinel), then eliminate by symmetric difference:
+<pre><code>aug_col = num_bits        # sentinel index that stands for the syndrome column
+rows = []
+for r in range(num_rows):
+    row_set = set()
+    for c in erased_cols_set:     # ONLY erased columns are ever inserted
+        if H[r][c]:
+            row_set.add(int(c))
+    if s[r]:
+        row_set.add(aug_col)      # a 1 in the syndrome
+    rows.append(row_set)
+
+for j in candidate_cols:          # pivot-selection order (natural, or DFS)
+    # pick the first still-available row that contains column j  (no row swap)
+    pivot_set = rows[pivot_row_index]
+    for idx in range(num_rows):
+        if (idx != pivot_row_index) and (j in rows[idx]):
+            rows[idx] ^= pivot_set    # GF(2) row add == set symmetric difference</code></pre>
+  The min-weight read-off mirrors the dense path: free variables stay 0, each pivot variable takes the value of the
+  augmented sentinel in its pivot row. A pivot landing on <code>aug_col</code> means a &ldquo;0 = 1&rdquo; row &mdash; an
+  inconsistent system &mdash; exactly as a pivot in the dense augmented column would signal.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="trace">4 &middot; One system, both ways (hand trace)</h2>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; same input, same output</div>
+  Solve the &sect;2 / &sect;3 system with natural column order (c0, c1, c2, c3, &hellip;).
+  <div class="matrix">Dense (whole rows)            Sparse (sets of 1s)
+---------------------         --------------------
+[110000|1]                    {c0,c1,s}
+[011000|0]                    {c1,c2}
+[001100|1]                    {c2,c3,s}
+
+pivot c0 -&gt; row0 (nothing below has c0)
+pivot c1 -&gt; row0; clear row1:
+[110000|1]                    {c0,c1,s}
+[101000|1]   (row1 ^= row0)   {c0,c2,s}   (row1 = {c1,c2} &#8710; {c0,c1,s})
+[001100|1]                    {c2,c3,s}
+pivot c2 -&gt; row1; clear row2:
+[001100|1] -&gt; row2 ^= row1
+[110000|1]                    {c0,c1,s}
+[101000|1]                    {c0,c2,s}
+[100100|0]                    {c0,c3}     (row2 = {c2,c3,s} &#8710; {c0,c2,s})</div>
+  Read off with free variables = 0. Both representations give the <strong>same</strong> pivot columns
+  {c0, c1, c2} and the same reduced syndrome bits, hence the identical solution
+  <span class="mono">e</span>. The sparse trace only ever wrote the indices that mattered.
+</div>
+
+<div class="box note">
+  <div class="label">Heads-up</div>
+  This equality holds <em>for the same column order</em>. Turning on DFS changes the <em>order</em> in which columns are
+  chosen as pivots (sparse and dense alike), which can change <em>which</em> minimum-weight solution is returned when the
+  system is under-determined &mdash; but it is still a valid minimum-weight solution with the same syndrome.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="table">5 &middot; Side-by-side comparison</h2>
+
+<table class="params">
+<tr><th>Aspect</th><th>Dense GE</th><th>Sparse GE</th></tr>
+<tr><td>Row storage</td><td>full <span class="mono">m&times;n</span> array of 0/1</td><td>Python <code>set</code> of the 1-positions</td></tr>
+<tr><td>Stores zeros?</td><td>yes &mdash; every entry</td><td>no &mdash; only 1s exist</td></tr>
+<tr><td>Non-erased columns</td><td>explicitly set to 0</td><td>never inserted</td></tr>
+<tr><td>Row addition (GF(2))</td><td><code>M[:, j:] ^= np.outer(col, row)</code> over the whole block</td><td><code>rows[idx] ^= pivot_set</code> (symmetric difference)</td></tr>
+<tr><td>Pivoting</td><td>physical row swap</td><td>select the first available row containing the column (no swap)</td></tr>
+<tr><td>Memory</td><td><span class="mono">O(m&middot;n)</span></td><td><span class="mono">O(nnz)</span> (number of 1s)</td></tr>
+<tr><td>Touches per elimination</td><td>full row width, zeros included</td><td>only rows that contain the pivot column, only their 1s</td></tr>
+<tr><td>Arithmetic</td><td>GF(2), exact</td><td>GF(2), exact</td></tr>
+<tr><td>Inconsistency signal</td><td>pivot in the augmented column</td><td>pivot on the <code>aug_col</code> sentinel</td></tr>
+<tr><td>Result (same column order)</td><td colspan="2" style="text-align:center"><strong>identical</strong> RREF pivots and minimum-weight solution</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="fillin">6 &middot; Fill-in and why DFS reordering exists</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Sparsity is not free forever. Every XOR can <strong>add</strong> new 1-positions to a row (symmetric difference grows
+  when the two sets barely overlap). This is <strong>fill-in</strong>: a row that began with a few 1s can swell as
+  elimination proceeds, eroding the sparse advantage. Dense GE pays the full width regardless, so it does not
+  &ldquo;notice&rdquo; fill-in &mdash; but it is always paying the worst case.
+</div>
+
+<div class="box note">
+  <div class="label">Heads-up &mdash; this is the motivation for DFS</div>
+  Because fill-in depends on the <em>order</em> in which columns are eliminated, choosing a good order matters for the
+  sparse solver. The project&rsquo;s <strong>DFS column reordering</strong> walks the Tanner graph induced by the erased
+  columns and emits a pivot order that keeps eliminations local, aiming to limit fill-in. DFS changes only the
+  <em>order</em> (and therefore which particular min-weight solution is read off); it does not change the backend or the
+  syndrome. Its cost is measured separately and excluded from &ldquo;GE time / elimination only&rdquo;.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="where">7 &middot; Where each is used in this project</h2>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py &middot; perform_classical_syndrome_analysis_with_erasure(...)</span>
+  There is a single matrix-solve entry point. Both the cascade decoder&rsquo;s per-cluster solve and the
+  peeling&rarr;GE pipeline&rsquo;s global solve call it; it dispatches on <code>SOLVER_CONFIG["backend"]</code> and times
+  the call (subtracting any DFS reordering):
+<pre><code>if (backend == "sparse"):
+    predicted_e = _sparse_solve_classical_syndrome_with_erasure(H, s, E_index_set, reorder=reorder)
+else:
+    predicted_e = _dense_solve_classical_syndrome_with_erasure(H, s, E_index_set, reorder=reorder)
+# a final  H . predicted_e (mod 2) == s  assertion guards both paths</code></pre>
+</div>
+
+<div class="box idea">
+  <div class="label">Key idea &mdash; which experiments use which</div>
+  The backend is fixed per experiment condition via <code>set_solver_config</code>:
+  <span class="mono">dense</span> / <span class="mono">dense_dfs</span> use Dense GE;
+  <span class="mono">sparse</span> / <span class="mono">sparse_dfs</span> use Sparse GE.
+  The current C_1600 high-erasure campaign (both peeling&rarr;GE conditions <em>and</em> the cascade baseline) is
+  entirely <span class="mono">backend = "sparse"</span>, so every matrix in that report is reduced by Sparse GE; DFS
+  is the only thing that varies between its two peeling&rarr;GE curves.
+</div>
+
+<div class="footer">
+  Companion note to <span class="mono">PROJECT_EXPLAINED.html</span>. Code references:
+  <span class="mono">standard_form</span> (dense GF(2) Gauss&ndash;Jordan) in
+  <span class="mono">Hypergraph_Product_Code_Construction_v3.py</span>;
+  <span class="mono">_dense_solve_classical_syndrome_with_erasure</span>,
+  <span class="mono">_sparse_solve_classical_syndrome_with_erasure</span>,
+  <span class="mono">dfs_order</span>, and
+  <span class="mono">perform_classical_syndrome_analysis_with_erasure</span> in
+  <span class="mono">utilities.py</span>. Both backends are exact GF(2); with a fixed column order they return the
+  identical minimum-weight solution.
+</div>
+
+</div>
+</body>
+</html>
