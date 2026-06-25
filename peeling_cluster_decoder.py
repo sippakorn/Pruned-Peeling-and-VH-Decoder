@@ -1002,6 +1002,8 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     total_ge_time = 0.0          # elimination only (excludes DFS reordering)
     total_reorder_time = 0.0     # DFS reordering only
     total_ge_calls = 0
+    total_xor_writes = 0         # fill-in: cumulative XOR element-writes (elimination work)
+    peak_row_size = 0            # fill-in: largest row-set size reached in any solve
     
     # Rather than return the individual variables, consolidate these into a dictionary and return this at the end.
     simulation_results_dict = {}
@@ -1078,6 +1080,9 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
         total_ge_time += ge_stats["ge_time"]
         total_reorder_time += ge_stats["reorder_time"]
         total_ge_calls += ge_stats["ge_calls"]
+        total_xor_writes += ge_stats["xor_element_writes"]
+        if (ge_stats["peak_row_size"] > peak_row_size):
+            peak_row_size = ge_stats["peak_row_size"]
 
         # Write a print statment to track the progress of the simulation
         if ((iterations+1)%progress_count == 0):
@@ -1118,6 +1123,13 @@ def combined_peeling_cluster_decoder_simulation(HGP_code,num_iterations,erasure_
     simulation_results_dict['num_ge_calls'] = total_ge_calls
     simulation_results_dict['mean_ge_time_per_call'] = (
         total_ge_time/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
+
+    # Fill-in instrumentation (sparse backend): direct, order-dependent measures so DFS vs
+    # natural order can be compared numerically rather than inferred from ge_time.
+    simulation_results_dict['total_xor_writes'] = total_xor_writes
+    simulation_results_dict['mean_xor_writes_per_call'] = (
+        total_xor_writes/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
+    simulation_results_dict['peak_row_size'] = peak_row_size
             
     # Return the number of decoding failures, logical errors, and decoding successes.
     return simulation_results_dict
@@ -1241,10 +1253,12 @@ def write_list_of_performance_dictionaries_to_file(HGP_code,list_of_perf_dicts,A
 #   sparse_dfs : custom sparse GF(2) GE with DFS matrix reordering (the proposal)
 
 EXPERIMENT_CONDITIONS = {
-    "dense":      {"backend": "dense",  "reorder": None},
-    "dense_dfs":  {"backend": "dense",  "reorder": "dfs"},
-    "sparse":     {"backend": "sparse", "reorder": None},
-    "sparse_dfs": {"backend": "sparse", "reorder": "dfs"},
+    "dense":              {"backend": "dense",  "reorder": None},
+    "dense_dfs":          {"backend": "dense",  "reorder": "dfs"},
+    "sparse":             {"backend": "sparse", "reorder": None},
+    "sparse_dfs":         {"backend": "sparse", "reorder": "dfs"},
+    "sparse_min_degree":  {"backend": "sparse", "reorder": "min_degree"},
+    "sparse_rcm":         {"backend": "sparse", "reorder": "rcm"},
 }
 
 
@@ -1550,6 +1564,8 @@ def peeling_ge_decoder_simulation(HGP_code, num_iterations, erasure_rate, seed=N
     total_ge_time = 0.0          # elimination only (excludes DFS reordering)
     total_reorder_time = 0.0     # DFS reordering only
     total_ge_calls = 0
+    total_xor_writes = 0         # fill-in: cumulative XOR element-writes (elimination work)
+    peak_row_size = 0            # fill-in: largest row-set size reached in any solve
 
     simulation_results_dict = {}
     progress_count = max(1, int(num_iterations/2))
@@ -1575,6 +1591,9 @@ def peeling_ge_decoder_simulation(HGP_code, num_iterations, erasure_rate, seed=N
         total_ge_time += ge_stats["ge_time"]
         total_reorder_time += ge_stats["reorder_time"]
         total_ge_calls += ge_stats["ge_calls"]
+        total_xor_writes += ge_stats["xor_element_writes"]
+        if (ge_stats["peak_row_size"] > peak_row_size):
+            peak_row_size = ge_stats["peak_row_size"]
 
         if ((iterations+1) % progress_count == 0):
             print("Current progress: ", iterations+1, " simulations completed at ", erasure_rate, " erasure rate.")
@@ -1599,6 +1618,13 @@ def peeling_ge_decoder_simulation(HGP_code, num_iterations, erasure_rate, seed=N
     simulation_results_dict['num_ge_calls'] = total_ge_calls
     simulation_results_dict['mean_ge_time_per_call'] = (
         total_ge_time/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
+
+    # Fill-in instrumentation (sparse backend): direct, order-dependent measures so DFS vs
+    # natural order can be compared numerically rather than inferred from ge_time.
+    simulation_results_dict['total_xor_writes'] = total_xor_writes
+    simulation_results_dict['mean_xor_writes_per_call'] = (
+        total_xor_writes/float(total_ge_calls) if (total_ge_calls > 0) else 0.0)
+    simulation_results_dict['peak_row_size'] = peak_row_size
 
     return simulation_results_dict
 
@@ -1661,23 +1687,24 @@ def run_peeling_ge_experiment(condition, list_of_named_codes, max_erasure_rate, 
 
 def experiment_peeling_ge_high_erasure_main():
 
-    print("Running PEELING->GE high-erasure experiment: plain Sparse GE vs Sparse GE + DFS (erasure 0.30 -> 0.45, 10000 trials/rate).")
+    print("Running PEELING->GE full-sweep experiment: plain Sparse GE vs Sparse GE + DFS (erasure 0.00 -> 0.45, 2500 trials/rate).")
 
-    num_trials = 10000
+    num_trials = 2500
     seed = 12345
-    file_tag = "PEELGEHIGH_"
+    file_tag = "PEELGEFULL_"
 
-    # min=0.29, max=0.45, steps=16 -> evaluated rates are 0.30, 0.31, ..., 0.45 (inclusive).
-    min_erasure_rate = 0.29
+    # Full erasure sweep from 0 to 0.45 at 0.01 resolution.
+    # min=0.0, max=0.45, steps=45 -> evaluated rates are 0.01, 0.02, ..., 0.45.
+    min_erasure_rate = 0.0
     max_erasure_rate = 0.45
-    steps = 16
+    steps = 45
 
     # Exploring the n1600 code family only (Toric/C_625 removed from this campaign).
     named_codes = []
     named_codes.append(("C_1600", construct_HGP_code_from_classical_H_text_file(
         'PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')))
 
-    # The two peeling -> GE conditions under test (tag PEELGEHIGH_).
+    # The two peeling -> GE conditions under test (tag PEELGEFULL_).
     all_results = {}
     for condition in ["sparse", "sparse_dfs"]:
         all_results[condition] = run_peeling_ge_experiment(
@@ -1685,17 +1712,17 @@ def experiment_peeling_ge_high_erasure_main():
             min_erasure_rate, seed, file_tag)
 
     # Baseline: original paper cascade (Peeling -> VH -> Cluster) with dense GE swapped for
-    # sparse GF(2) GE and NO DFS. Written under the HIGHERASURE_ tag (backend sparse, reorder
+    # sparse GF(2) GE and NO DFS. Written under the CASCADEFULL_ tag (backend sparse, reorder
     # None) so generate_peeling_ge_report.py picks it up as the baseline curve. Same seed /
-    # codes / rates / trials as above, so it decodes the identical samples.
+    # code / rates / trials as above, so it decodes the identical samples.
     baseline_results = run_experiment(
         "sparse", named_codes, max_erasure_rate=max_erasure_rate, steps=steps,
         num_iterations=num_trials, min_erasure_rate=min_erasure_rate, seed=seed,
-        file_tag="HIGHERASURE_")
+        file_tag="CASCADEFULL_")
 
     print()
     print("=" * 78)
-    print("PEELING->GE: plain Sparse GE vs Sparse GE + DFS (high erasure) at the maximum erasure rate:")
+    print("PEELING->GE: plain Sparse GE vs Sparse GE + DFS (full sweep) at the maximum erasure rate:")
     print("Note: total_ge_time is elimination only; DFS reordering is in total_reorder_time.")
     print("=" * 78)
     for code_name, _ in named_codes:
@@ -1720,6 +1747,55 @@ def experiment_peeling_ge_high_erasure_main():
             last_base['num_ge_calls']))
         print()
 
+
+
+# Quick proof-of-concept: compare column-ordering strategies for the peeling -> Sparse GE
+# pipeline in the HIGH-erasure regime only. Small trial count (250) for a fast exploratory
+# signal; if an ordering looks promising, rerun a full campaign. Compares natural order, DFS,
+# minimum-degree, and Reverse Cuthill-McKee. Writes its own data files tagged "ORDERPROOF_".
+
+def experiment_ordering_proof_main():
+
+    print("Running ORDERING proof: natural / DFS / min-degree / RCM for peeling->Sparse GE (high erasure, 250 trials/rate).")
+
+    num_trials = 250
+    seed = 12345
+    file_tag = "ORDERPROOF_"
+
+    # High-erasure regime only: min=0.29, max=0.45, steps=16 -> rates 0.30, 0.31, ..., 0.45.
+    min_erasure_rate = 0.29
+    max_erasure_rate = 0.45
+    steps = 16
+
+    named_codes = []
+    named_codes.append(("C_1600", construct_HGP_code_from_classical_H_text_file(
+        'PEG_HGP_code_(3,4)_family_n1600_k64_classicalH.txt')))
+
+    conditions = ["sparse", "sparse_dfs", "sparse_min_degree", "sparse_rcm"]
+    all_results = {}
+    for condition in conditions:
+        all_results[condition] = run_peeling_ge_experiment(
+            condition, named_codes, max_erasure_rate, steps, num_trials,
+            min_erasure_rate, seed, file_tag)
+
+    print()
+    print("=" * 78)
+    print("ORDERING proof at the maximum erasure rate (peeling -> Sparse GE):")
+    print("Note: total_ge_time is elimination only; reordering cost is in total_reorder_time.")
+    print("=" * 78)
+    for code_name, _ in named_codes:
+        print("Code:", code_name)
+        for condition in conditions:
+            last = all_results[condition][code_name][-1]
+            print("  {0:<18s} erasure={1:.4f}  fail={2:.4f}  ge_time={3:.4e}s  reorder={4:.4e}s  xor_writes={5}  peak_row={6}".format(
+                condition,
+                last['erasure_rate'],
+                last['failure_rate'],
+                last['total_ge_time'],
+                last.get('total_reorder_time', 0.0),
+                last.get('total_xor_writes', 0),
+                last.get('peak_row_size', 0)))
+        print()
 
 
 def main():
@@ -1765,7 +1841,8 @@ if __name__ == "__main__":
     #   python3 peeling_cluster_decoder.py quick      -> same as above
     #   python3 peeling_cluster_decoder.py densedfs   -> Dense vs Dense+DFS experiment (no sparse GE)
     #   python3 peeling_cluster_decoder.py higherasure-> (cascade) Sparse vs Sparse+DFS, erasure 0.30->0.45, 200 trials
-    #   python3 peeling_cluster_decoder.py peelge     -> (peeling->GE) plain Sparse GE vs Sparse GE+DFS, 0.30->0.45, 200 trials
+    #   python3 peeling_cluster_decoder.py peelge     -> (peeling->GE) plain Sparse GE vs Sparse GE+DFS + cascade baseline, C_1600, 0.00->0.45, 2500 trials
+    #   python3 peeling_cluster_decoder.py ordering   -> (peeling->GE) ordering proof: natural/DFS/min-degree/RCM, C_1600, high erasure, 250 trials
     #   python3 peeling_cluster_decoder.py full       -> original paper-scale job via main()
     #   python3 peeling_cluster_decoder.py <int>      -> original paper-scale array job (index = sys.argv[1])
     arg = sys.argv[1] if (len(sys.argv) > 1) else None
@@ -1777,5 +1854,7 @@ if __name__ == "__main__":
         experiment_sparse_high_erasure_main()
     elif (arg == "peelge"):
         experiment_peeling_ge_high_erasure_main()
+    elif (arg == "ordering"):
+        experiment_ordering_proof_main()
     else:
         experiment_main()

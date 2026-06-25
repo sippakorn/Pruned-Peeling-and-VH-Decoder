@@ -1,39 +1,20 @@
-"""Generate an HTML report for the PEELING -> GE pipeline (full erasure sweep 0.00 -> 0.45).
+"""Generate an HTML report for the COLUMN-ORDERING proof (peeling -> Sparse GE, high erasure).
 
-This compares the minimal pipeline -- plain M=0 peeling, then a SINGLE global GF(2)
-Gaussian elimination over the residual Hz system (no M=1/M=2, no cluster tree) -- in two
-flavors against the full cascade decoder as a baseline:
+Exploratory comparison of pivot/column-ordering strategies for the single global GF(2) GE in
+the peeling -> Sparse GE pipeline, in the high-erasure regime only (small 250-trial proof):
 
-  1. Peeling -> Sparse GE              (PEELGEFULL_ files, backend sparse, reorder None)
-  2. Peeling -> DFS -> Sparse GE       (PEELGEFULL_ files, backend sparse, reorder dfs)
-  3. Peeling -> VH -> Cluster (Sparse GE)  BASELINE
-                                       (CASCADEFULL_ files, backend sparse, reorder None)
+  1. Sparse GE (natural order)   (ORDERPROOF_ files, backend sparse, reorder None)
+  2. Sparse GE + DFS             (ORDERPROOF_ files, backend sparse, reorder dfs)
+  3. Sparse GE + min-degree      (ORDERPROOF_ files, backend sparse, reorder min_degree)
+  4. Sparse GE + RCM             (ORDERPROOF_ files, backend sparse, reorder rcm)
 
-The baseline is the original paper decoder (full cascade: M=0 peeling -> M=1/M=2 VH pruned
-peeling -> cluster decoder) with the ONLY change being dense GE replaced by sparse GF(2) GE.
-It does NOT use DFS reordering -- DFS is a feature of the proposal being evaluated, not of
-the baseline.
+All four decode the IDENTICAL samples (same seed / code / rates / trials); only the column
+order fed to the GE differs. Fill-in is measured directly: 'total_xor_writes' (elimination
+work) and 'peak_row_size' (densest row reached). GE time is elimination only; the cost of
+computing each ordering is tracked separately in 'total_reorder_time'.
 
-Apple-to-apple justification for the cascade baseline:
-experiment_peeling_ge_high_erasure_main produces BOTH the PEELGEFULL_ files (the two
-peeling->GE conditions) and the CASCADEFULL_ baseline file (cascade, sparse GE, no DFS) in a
-single run, using seed=12345 with the same per-step seeding (step_seed = seed + step_index),
-the same code (C_1600), the same full erasure sweep (0.00 -> 0.45 at 0.01 resolution), and the
-same trial count (2500). Neither decoder consumes the random / np.random streams during
-decoding (those are only used by sample generation and code construction), so all conditions
-decode the IDENTICAL erasure/error samples per rate.
-
-Failure-rate keys differ by pipeline: the peeling->GE result dicts store 'failure_rate';
-the cascade result dicts store 'failure_rate_peeling_M2_cluster'. GE time is elimination only
-(DFS reordering is tracked separately in 'total_reorder_time').
-
-Fill-in is measured directly (sparse backend): 'total_xor_writes' counts the elements toggled by
-every GF(2) row-addition (rows[idx] ^= pivot_set), and 'peak_row_size' is the largest row-set
-reached during elimination. These let DFS vs no-DFS be compared on fill-in numerically rather than
-inferred from ge_time.
-
-Run with:  python3 generate_peeling_ge_report.py
-Output:    peeling_ge_full_sweep_report.html
+Run with:  python3 generate_ordering_report.py
+Output:    ordering_comparison_report.html
 """
 
 import ast
@@ -43,20 +24,16 @@ import os
 
 # Each condition: (key, label, color, file_tag, (ge_backend, ge_reorder), failure_rate_key)
 CONDITIONS = [
-    ("peel_sparse",     "Peeling \u2192 Sparse GE",
-     "#2da44e", "PEELGEFULL", ("sparse", None),  "failure_rate"),
-    ("peel_sparse_dfs", "Peeling \u2192 DFS \u2192 Sparse GE",
-     "#d1242f", "PEELGEFULL", ("sparse", "dfs"), "failure_rate"),
-    ("cascade_sparse", "Peeling \u2192 VH \u2192 Cluster (Sparse GE) [baseline]",
-     "#0969da", "CASCADEFULL", ("sparse", None), "failure_rate_peeling_M2_cluster"),
+    ("natural",    "Sparse GE (natural order)", "#2da44e", "ORDERPROOF", ("sparse", None),         "failure_rate"),
+    ("dfs",        "Sparse GE + DFS",           "#d1242f", "ORDERPROOF", ("sparse", "dfs"),         "failure_rate"),
+    ("min_degree", "Sparse GE + min-degree",    "#8250df", "ORDERPROOF", ("sparse", "min_degree"),  "failure_rate"),
+    ("rcm",        "Sparse GE + RCM",           "#bc4c00", "ORDERPROOF", ("sparse", "rcm"),          "failure_rate"),
 ]
 
 CODES = [("C_1600", "1600 qubits")]
 
 
 def load_results_for(code, file_tag, signature):
-    """Return the rows from the most recent file for this code/tag whose stored
-    (ge_backend, ge_reorder) matches the requested signature."""
     want_backend, want_reorder = signature
     file_glob = "{0}_*{1}*trials_*.txt".format(code, file_tag)
     best_rows = None
@@ -88,23 +65,21 @@ def build_data():
             rows = load_results_for(code, file_tag, sig)
             if not rows:
                 continue
-            # Use the erasure rates from the first available condition for this code.
             if code not in x_by_code:
                 x_by_code[code] = [r["erasure_rate"] for r in rows]
             if trials is None:
                 trials = rows[0].get("total_trials")
             data[code][cond] = {
                 "fr": [r.get(fr_key) for r in rows],
-                "ge": [r["total_ge_time"] for r in rows],                # elimination only (seconds)
-                "re": [r.get("total_reorder_time", 0.0) for r in rows],  # DFS reorder (seconds)
-                "dt": [r["mean_decode_time"] for r in rows],            # seconds
-                "xw": [r.get("total_xor_writes", 0) for r in rows],      # fill-in: XOR element-writes
-                "pk": [r.get("peak_row_size", 0) for r in rows],        # fill-in: peak row-set size
+                "ge": [r["total_ge_time"] for r in rows],
+                "re": [r.get("total_reorder_time", 0.0) for r in rows],
+                "dt": [r["mean_decode_time"] for r in rows],
+                "xw": [r.get("total_xor_writes", 0) for r in rows],
+                "pk": [r.get("peak_row_size", 0) for r in rows],
             }
     return data, x_by_code, trials
 
 
-# CONDS for the embedded JS: [key, label, color]
 def conds_for_js():
     return [[c[0], c[1], c[2]] for c in CONDITIONS]
 
@@ -114,7 +89,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>PPVH Decoder: Peeling -> GE pipeline (full sweep 0.00-0.45)</title>
+<title>PPVH Decoder: column-ordering proof (peeling -> Sparse GE, high erasure)</title>
 <style>
   :root { color-scheme: light; }
   body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -144,14 +119,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>Peeling &rarr; GE pipeline &mdash; full erasure sweep (0.00 &rarr; 0.45)</h1>
-  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). __TRIALS__ trials per erasure rate, fixed RNG seed so all conditions decode the <strong>identical</strong> samples. Full sweep across the code family's behavior, from the easy low-erasure regime through the threshold.</p>
+  <h1>Column-ordering proof &mdash; peeling &rarr; Sparse GE (high erasure)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). __TRIALS__ trials per erasure rate (exploratory), fixed RNG seed so all orderings decode the <strong>identical</strong> samples. C_1600 only.</p>
   <div class="note">
-    <strong>Pipeline under test:</strong> plain M=0 peeling, then a <strong>single global GF(2) Gaussian elimination over the residual Hz system</strong> (all remaining erased qubits at once) &mdash; no M=1, no M=2, no cluster-tree decomposition. The only optional step between peeling and GE is the DFS column reordering.<br/>
-    <strong>Baseline:</strong> the original paper decoder (full cascade &mdash; Peeling &rarr; VH &rarr; Cluster) with the <strong>only</strong> change being dense GE replaced by sparse GF(2) GE. The baseline uses <strong>no DFS</strong>.<br/>
-    <strong>GE time is elimination only</strong>; DFS reordering is measured separately and excluded from the GE-time chart. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).<br/>
-    <strong>Fill-in is measured directly</strong> (not inferred from time): <em>total XOR element-writes</em> counts the elements toggled by every GF(2) row-addition <code>rows[idx] ^= pivot_set</code> (the elimination work), and <em>peak row-set size</em> is the densest any row became during elimination. Comparing the no-DFS vs DFS fill-in curves on identical samples shows whether DFS actually reduces fill-in.<br/>
-    The baseline uses the seed-matched <code>CASCADEFULL_</code> cascade data produced in the same run (identical samples; see the generator docstring).
+    All four conditions are the same pipeline (plain M=0 peeling, then one global GF(2) GE over the residual Hz); <strong>only the column/pivot order differs</strong>: natural index order, DFS, minimum-degree, and Reverse Cuthill-McKee (RCM).<br/>
+    <strong>Fill-in is measured directly:</strong> <em>total XOR element-writes</em> (elimination work) and <em>peak row-set size</em> (densest row reached). <strong>GE time is elimination only</strong>; the cost of computing each ordering is tracked separately as <em>reorder time</em>. A good ordering should lower fill-in / GE time; whether it wins overall depends on whether that saving beats its reorder cost (compare the decode-time chart).
   </div>
   <div id="sections"></div>
 </div>
@@ -166,7 +138,6 @@ const CODES = __CODES__;
 
 function metricSeries(code, metric) {
   const X = X_BY_CODE[code];
-  // Time metrics (ge/re/dt) are seconds -> ms; failure rate and fill-in counts are unscaled.
   const scale = (metric === "ge" || metric === "re" || metric === "dt") ? 1000.0 : 1.0;
   const out = [];
   for (const [cond, label, color] of CONDS) {
@@ -217,31 +188,30 @@ function drawChart(canvas, code, series) {
 function summaryTable(code) {
   const X = X_BY_CODE[code];
   const last = X.length - 1;
-  // Speedup baseline is the plain Peeling -> Sparse GE GE time.
-  const baseGe = (DATA[code]["peel_sparse"]) ? DATA[code]["peel_sparse"].ge[last] : null;
+  const baseGe = (DATA[code]["natural"]) ? DATA[code]["natural"].ge[last] : null;
+  const baseXw = (DATA[code]["natural"]) ? DATA[code]["natural"].xw[last] : null;
   let rows = "";
   for (const [cond, label, color] of CONDS) {
     if (!DATA[code] || !DATA[code][cond]) continue;
     const d = DATA[code][cond];
     const ge = d.ge[last];
-    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
-    const baseXw = (DATA[code]["peel_sparse"]) ? DATA[code]["peel_sparse"].xw[last] : null;
+    const geR = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
     const xw = d.xw[last];
-    const xwRatio = (xw > 0 && baseXw) ? " (" + (xw / baseXw).toFixed(2) + "x)" : "";
+    const xwR = (xw > 0 && baseXw) ? " (" + (xw / baseXw).toFixed(2) + "x)" : "";
     rows += "<tr>" +
       "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
       "<td>" + X[last].toFixed(2) + "</td>" +
       "<td>" + (d.fr[last] != null ? d.fr[last].toFixed(4) : "&mdash;") + "</td>" +
-      "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
-      "<td>" + xw.toLocaleString() + xwRatio + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + geR + "</td>" +
+      "<td>" + xw.toLocaleString() + xwR + "</td>" +
       "<td>" + d.pk[last].toLocaleString() + "</td>" +
       "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
       "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
       "</tr>";
   }
-  return "<table><thead><tr><th>Condition</th><th>Erasure rate</th><th>Failure rate</th>" +
+  return "<table><thead><tr><th>Ordering</th><th>Erasure rate</th><th>Failure rate</th>" +
     "<th>GE time / elimination only (ms)</th><th>Fill-in: XOR writes</th><th>Fill-in: peak row size</th>" +
-    "<th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
+    "<th>Reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
     rows + "</tbody></table>";
 }
 
@@ -256,7 +226,6 @@ function render() {
   for (const [code, qubits] of CODES) {
     if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
     const X = X_BY_CODE[code];
-    const present = CONDS.filter(([c]) => DATA[code][c]).map(([c]) => c);
     const missing = CONDS.filter(([c]) => !DATA[code][c]);
     let missingHtml = "";
     if (missing.length > 0) {
@@ -271,7 +240,7 @@ function render() {
         "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
         "<div class='chartbox'><h4>Fill-in: total XOR element-writes</h4><canvas data-code='" + code + "' data-metric='xw'></canvas></div>" +
         "<div class='chartbox'><h4>Fill-in: peak row-set size</h4><canvas data-code='" + code + "' data-metric='pk'></canvas></div>" +
-        "<div class='chartbox'><h4>DFS reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
         "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
       "</div>" +
       missingHtml +
@@ -291,7 +260,6 @@ window.addEventListener("resize", render);
 
 
 def validate_html(html_text):
-    """Lightweight well-formedness check (mirrors the AGENTS.md validation step)."""
     import html.parser as hp
     hp.HTMLParser().feed(html_text)
 
@@ -299,9 +267,9 @@ def validate_html(html_text):
 def main():
     data, x_by_code, trials = build_data()
     if not x_by_code:
-        print("No result files found for the PEELING->GE full-sweep report.")
-        print("Generate the data first (writes PEELGEFULL_ + CASCADEFULL_ files for C_1600):")
-        print("  python3 peeling_cluster_decoder.py peelge")
+        print("No ORDERPROOF result files found.")
+        print("Generate the data first:")
+        print("  python3 peeling_cluster_decoder.py ordering")
         return
 
     html = HTML_TEMPLATE
@@ -311,18 +279,16 @@ def main():
     html = html.replace("__CODES__", json.dumps(CODES))
     html = html.replace("__TRIALS__", str(trials))
 
-    out_path = "peeling_ge_full_sweep_report.html"
+    out_path = "ordering_comparison_report.html"
     with open(out_path, "w") as f:
         f.write(html)
 
-    # Validate the emitted HTML so a malformed report is caught immediately.
     try:
         validate_html(html)
         print("HTML validation: OK")
     except Exception as exc:
         print("HTML validation FAILED:", exc)
 
-    # Report which series actually made it into the file.
     for code, _ in CODES:
         present = sorted(data.get(code, {}).keys())
         print("  " + code + ": " + (", ".join(present) if present else "(no data)"))

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PPVH Decoder: Peeling -> GE pipeline (full sweep 0.00-0.45)</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: #57606a; margin: 0 0 18px; font-size: 14px; }
+  .note { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px;
+          padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+            padding: 18px 20px; margin: 0 0 22px; }
+  h2 { font-size: 19px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 16px 0 8px; color: #424a53; }
+  .muted { color: #8b949e; font-weight: 400; font-size: 14px; }
+  .charts { display: flex; flex-wrap: wrap; gap: 18px; }
+  .chartbox { flex: 1 1 320px; min-width: 300px; }
+  .chartbox h4 { font-size: 13.5px; margin: 0 0 6px; text-align: center; color: #1f2328; }
+  canvas { width: 100%; height: 280px; display: block; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin: 6px 0 0; font-size: 12.5px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 6px; }
+  th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; }
+  th { background: #f6f8fa; }
+  .missing { color: #8b949e; font-style: italic; font-size: 13.5px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Peeling &rarr; GE pipeline &mdash; full erasure sweep (0.00 &rarr; 0.45)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). 2500 trials per erasure rate, fixed RNG seed so all conditions decode the <strong>identical</strong> samples. Full sweep across the code family's behavior, from the easy low-erasure regime through the threshold.</p>
+  <div class="note">
+    <strong>Pipeline under test:</strong> plain M=0 peeling, then a <strong>single global GF(2) Gaussian elimination over the residual Hz system</strong> (all remaining erased qubits at once) &mdash; no M=1, no M=2, no cluster-tree decomposition. The only optional step between peeling and GE is the DFS column reordering.<br/>
+    <strong>Baseline:</strong> the original paper decoder (full cascade &mdash; Peeling &rarr; VH &rarr; Cluster) with the <strong>only</strong> change being dense GE replaced by sparse GF(2) GE. The baseline uses <strong>no DFS</strong>.<br/>
+    <strong>GE time is elimination only</strong>; DFS reordering is measured separately and excluded from the GE-time chart. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).<br/>
+    <strong>Fill-in is measured directly</strong> (not inferred from time): <em>total XOR element-writes</em> counts the elements toggled by every GF(2) row-addition <code>rows[idx] ^= pivot_set</code> (the elimination work), and <em>peak row-set size</em> is the densest any row became during elimination. Comparing the no-DFS vs DFS fill-in curves on identical samples shows whether DFS actually reduces fill-in.<br/>
+    The baseline uses the seed-matched <code>CASCADEFULL_</code> cascade data produced in the same run (identical samples; see the generator docstring).
+  </div>
+  <div id="sections"></div>
+</div>
+
+<script>
+const X_BY_CODE = {"C_1600": [0.01, 0.02, 0.03, 0.04, 0.05, 0.060000000000000005, 0.07, 0.08, 0.09, 0.09999999999999999, 0.10999999999999999, 0.11999999999999998, 0.12999999999999998, 0.13999999999999999, 0.15, 0.16, 0.17, 0.18000000000000002, 0.19000000000000003, 0.20000000000000004, 0.21000000000000005, 0.22000000000000006, 0.23000000000000007, 0.24000000000000007, 0.25000000000000006, 0.26000000000000006, 0.2700000000000001, 0.2800000000000001, 0.2900000000000001, 0.3000000000000001, 0.3100000000000001, 0.3200000000000001, 0.3300000000000001, 0.34000000000000014, 0.35000000000000014, 0.36000000000000015, 0.37000000000000016, 0.38000000000000017, 0.3900000000000002, 0.4000000000000002, 0.4100000000000002, 0.4200000000000002, 0.4300000000000002, 0.4400000000000002, 0.45000000000000023]};
+const TRIALS = 2500;
+const DATA = {"C_1600": {"peel_sparse": {"fr": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0004, 0.0004, 0.0008, 0.0028, 0.0008, 0.0024, 0.002, 0.004, 0.0032, 0.0052, 0.0044, 0.0072, 0.0088, 0.0108, 0.0132, 0.022, 0.0264, 0.0256, 0.0396, 0.0416, 0.0512, 0.0684, 0.074, 0.0948, 0.1136, 0.1412, 0.168, 0.2016, 0.234, 0.3004], "ge": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.003838313990854658, 0.000757713001803495, 0.0012101850006729364, 0.0007140820089261979, 0.002738634022534825, 0.005286528990836814, 0.009631537002860568, 0.012407828020513989, 0.02329355402616784, 0.03288610896561295, 0.03934922102780547, 0.04994155994791072, 0.07387168798595667, 0.09759738904540427, 0.128221235863748, 0.1772689718491165, 0.2144810679164948, 0.30457993678282946, 0.38508951099356636, 0.45792803324002307, 0.6290005170740187, 0.7537694868660765, 1.0413033938966691, 1.2945393512782175, 1.6429227960470598, 2.1824718250718433, 3.364056371006882, 6.651668363978388, 17.5321618791495, 37.32194829812215, 63.94720806682017, 90.53426749365462, 112.07787653693231, 127.55549062931095, 142.0309956127603], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.010921982888574712, 0.010764183845953084, 0.010782714172016131, 0.01088158207112574, 0.010925721261883155, 0.010987021071655908, 0.010984627833362902, 0.011140469709364697, 0.011303714626433793, 0.011377247495116899, 0.011380653849139343, 0.01147416263645864, 0.01148835163397016, 0.011605366374435835, 0.011749140463775256, 0.0119004718387092, 0.0119688218661875, 0.012028136549505871, 0.012080737846298144, 0.01214323936952278, 0.012196959392318968, 0.012346344389946898, 0.012363927566108759, 0.012504392185009783, 0.012588963225210319, 0.012838599996734411, 0.012878663001919631, 0.013118521028512624, 0.013180142486165277, 0.013334979841235326, 0.013632852777990047, 0.013753988465690054, 0.014095515123941004, 0.01434603668441414, 0.014664382016123273, 0.015082459193369141, 0.015763387577742104, 0.01713284679785138, 0.02149187595748226, 0.02934081757486565, 0.03990866416398203, 0.050615770723909374, 0.05909612181037664, 0.06528302970044315, 0.07100436085282126], "xw": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 177, 58, 94, 66, 242, 464, 861, 1115, 1889, 3045, 3629, 4507, 6802, 9370, 12982, 18359, 22088, 33548, 43924, 54290, 76039, 98763, 146742, 192756, 262778, 521971, 3574982, 14744221, 64991968, 184905540, 386935302, 649382781, 954470811, 1244507017, 1550480321], "pk": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 4, 6, 7, 7, 7, 8, 7, 9, 9, 10, 11, 11, 12, 34, 42, 59, 72, 84, 83, 91, 92, 101, 107]}, "peel_sparse_dfs": {"fr": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0004, 0.0004, 0.0008, 0.0028, 0.0008, 0.0024, 0.002, 0.0036, 0.0036, 0.0052, 0.0044, 0.0076, 0.0084, 0.0116, 0.0136, 0.022, 0.0256, 0.028, 0.0392, 0.042, 0.0524, 0.0708, 0.07, 0.0924, 0.1128, 0.1392, 0.17, 0.2068, 0.2312, 0.3], "ge": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0023448619904229417, 0.0007012179994489998, 0.0012194619775982574, 0.0011825459951069206, 0.002746018988545984, 0.0051540479907998815, 0.009415128020918928, 0.0118045929557411, 0.022684212031890638, 0.031941901019308716, 0.03975437302142382, 0.048671212905901484, 0.0737905968708219, 0.09548690202063881, 0.12753397898632102, 0.1723185079463292, 0.2105739148973953, 0.2947883666638518, 0.38022658703266643, 0.4539083507406758, 0.6085035527212312, 0.7499884008575464, 1.0276192988822004, 1.292333542194683, 1.6201192658481887, 2.1338769227149896, 3.2334431885392405, 6.493476373289013, 17.24032365520543, 36.83216247620294, 63.30326992555638, 91.20444800070254, 115.05717893959081, 131.16889639932197, 148.72170434703003], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0007882450154284015, 0.0002461219992255792, 0.00040894201083574444, 0.00046385001041926444, 0.0009719480003695935, 0.0019221220136387274, 0.0033787949942052364, 0.004220943010295741, 0.008908624004106969, 0.011689223945722915, 0.014849712941213511, 0.017416943053831346, 0.027151239046361297, 0.03514128197275568, 0.04717603100289125, 0.06345299592067022, 0.07828525110380724, 0.11326114820258226, 0.1456782119057607, 0.17510867705277633, 0.23791852504655253, 0.3023802820534911, 0.42392285900132265, 0.5424023049126845, 0.6931717441329965, 0.9397727810719516, 1.4538296102546155, 2.96881428056804, 7.768686850569793, 15.953920391038992, 26.352873241281486, 36.21456389510422, 43.14686396949401, 46.547293791823904, 49.74698765081121], "dt": [0.010544873323285719, 0.010600308495550416, 0.010743077875435119, 0.010813939185166965, 0.01086893748253351, 0.010876711713901022, 0.011105117752356454, 0.011331327963573858, 0.011282619028066983, 0.011210009209712735, 0.01139989105714485, 0.011403539764939342, 0.011536052556079812, 0.011498592293221737, 0.011566995712835341, 0.011695105963980313, 0.011775018620374613, 0.011920985818176995, 0.011952953727112617, 0.012098816672491375, 0.012121324005047791, 0.012172031825309387, 0.01235000094047282, 0.01231207743503619, 0.012438114142767154, 0.012533290478645358, 0.012759384032373783, 0.012821414396615001, 0.013019765687687323, 0.01321934558378416, 0.013526476641697809, 0.013746237750811269, 0.014060762549570062, 0.01441087142325705, 0.014764066506188828, 0.015103575829177863, 0.01584721723542898, 0.0179738348855637, 0.02428102305715438, 0.03531197494571679, 0.049984294219431465, 0.06523198124959599, 0.07752029441245832, 0.08512816269199247, 0.09334623339445097], "xw": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 161, 56, 80, 73, 239, 403, 833, 1036, 1711, 2827, 3261, 4136, 6178, 8895, 12020, 16922, 20685, 31984, 41522, 50994, 72086, 93362, 137811, 180237, 248601, 469707, 3018559, 12341764, 55282929, 163612730, 352992191, 617399067, 946118209, 1282628412, 1679652309], "pk": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5, 6, 5, 4, 6, 7, 7, 8, 8, 8, 10, 9, 10, 11, 11, 12, 34, 48, 61, 68, 77, 82, 90, 100, 109, 111]}, "cascade_sparse": {"fr": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0004, 0.0004, 0.0008, 0.0028, 0.0012, 0.0028, 0.002, 0.004, 0.0032, 0.006, 0.0052, 0.0092, 0.0108, 0.0148, 0.0176, 0.0304, 0.0416, 0.0524, 0.0712, 0.0876, 0.1308, 0.178, 0.2636, 0.416, 0.6192, 0.8164, 0.9316, 0.988, 0.9976, 0.9996], "ge": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0704995626583695e-05, 0.0, 0.0, 3.253399336244911e-05, 9.281699021812528e-05, 0.0001325759949395433, 0.00027320800290908664, 0.0005853979819221422, 0.00046689799637533724, 0.0005003690166631714, 0.0009147039818344638, 0.001499899968621321, 0.0017909949528984725, 0.0026202490116702393, 0.003079227084526792, 0.005724319984437898, 0.007251962044392712, 0.009003672894323245, 0.01234100312285591, 0.015302834042813629, 0.022435592938563786, 0.029398473008768633, 0.03758720390032977, 0.04524479393148795, 0.05081133607018273, 0.0624298670591088, 0.06256245200347621, 0.04574761296680663, 0.028505346039310098, 0.011254528042627499, 0.002794549029204063, 0.000284350011497736, 6.966300134081393e-05], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.03395837734323577, 0.03567628395071952, 0.037184109299984995, 0.03902403245528694, 0.04095391519907862, 0.0426111407291668, 0.04430705800372525, 0.046361269041977356, 0.047787541132140905, 0.04946800963960704, 0.051498443624959325, 0.05307077391765779, 0.054867409962951204, 0.05680210169281927, 0.05854578394770506, 0.06076551940144272, 0.062377516075992026, 0.06418797609911998, 0.06594635252675507, 0.06790908986039576, 0.06966195012065, 0.07143377099118661, 0.07341510365283466, 0.07552908426998182, 0.07722824331714655, 0.07945673403600231, 0.08133857014715322, 0.08332299620885751, 0.0853224371096352, 0.08743380030806874, 0.08963198970448576, 0.09139201191546745, 0.09384967400443857, 0.09586926856155624, 0.09775764456766774, 0.09977411253871396, 0.10140231413556612, 0.10203308578159194, 0.09887543958655443, 0.09187375756153487, 0.08153635926392744, 0.0723846999276022, 0.06611824039141065, 0.06297490817663493, 0.06097380799181992], "xw": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44, 0, 0, 44, 118, 198, 360, 664, 732, 854, 1422, 2436, 3494, 5308, 6162, 12194, 13520, 20352, 28866, 36494, 57762, 73057, 103205, 123413, 138836, 181136, 179772, 136550, 84408, 33582, 8336, 554, 264], "pk": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 3, 4, 4, 4, 5, 5, 5, 4, 6, 7, 7, 7, 8, 7, 9, 8, 9, 9, 10, 12, 10, 10, 10, 11, 12, 10, 9, 10, 6, 6]}}};
+
+const CONDS = [["peel_sparse", "Peeling \u2192 Sparse GE", "#2da44e"], ["peel_sparse_dfs", "Peeling \u2192 DFS \u2192 Sparse GE", "#d1242f"], ["cascade_sparse", "Peeling \u2192 VH \u2192 Cluster (Sparse GE) [baseline]", "#0969da"]];
+const CODES = [["C_1600", "1600 qubits"]];
+
+function metricSeries(code, metric) {
+  const X = X_BY_CODE[code];
+  // Time metrics (ge/re/dt) are seconds -> ms; failure rate and fill-in counts are unscaled.
+  const scale = (metric === "ge" || metric === "re" || metric === "dt") ? 1000.0 : 1.0;
+  const out = [];
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    out.push({ color, pts: X.map((x, i) => [x, DATA[code][cond][metric][i] * scale]) });
+  }
+  return out;
+}
+
+function drawChart(canvas, code, series) {
+  const X = X_BY_CODE[code];
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const mL = 54, mR = 12, mT = 12, mB = 34;
+  const pw = cssW - mL - mR, ph = cssH - mT - mB;
+  let yMax = 0;
+  series.forEach(s => s.pts.forEach(p => { if (p[1] > yMax) yMax = p[1]; }));
+  if (yMax <= 0) yMax = 1;
+  yMax *= 1.12;
+  const xMin = X[0], xMax = X[X.length - 1];
+  const sx = x => mL + (x - xMin) / (xMax - xMin) * pw;
+  const sy = y => mT + ph - (y / yMax) * ph;
+  ctx.strokeStyle = "#d0d7de"; ctx.lineWidth = 1; ctx.strokeRect(mL, mT, pw, ph);
+  ctx.font = "10px -apple-system, Segoe UI, sans-serif";
+  const yticks = 5;
+  for (let i = 0; i <= yticks; i++) {
+    const yv = yMax * i / yticks, py = sy(yv);
+    ctx.strokeStyle = "#eef1f4"; ctx.beginPath(); ctx.moveTo(mL, py); ctx.lineTo(mL + pw, py); ctx.stroke();
+    ctx.fillStyle = "#57606a"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(yv < 1 ? yv.toPrecision(2) : yv.toPrecision(3), mL - 5, py);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  X.forEach((xv, i) => { if (i % 2 === 0) { ctx.fillStyle = "#57606a"; ctx.fillText(xv.toFixed(2), sx(xv), mT + ph + 6); } });
+  ctx.fillStyle = "#424a53"; ctx.fillText("Erasure rate", mL + pw / 2, mT + ph + 19);
+  series.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    s.pts.forEach((p, i) => { const px = sx(p[0]), py = sy(p[1]); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    s.pts.forEach(p => { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 2.4, 0, Math.PI * 2); ctx.fill(); });
+  });
+}
+
+function summaryTable(code) {
+  const X = X_BY_CODE[code];
+  const last = X.length - 1;
+  // Speedup baseline is the plain Peeling -> Sparse GE GE time.
+  const baseGe = (DATA[code]["peel_sparse"]) ? DATA[code]["peel_sparse"].ge[last] : null;
+  let rows = "";
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    const d = DATA[code][cond];
+    const ge = d.ge[last];
+    const speed = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
+    const baseXw = (DATA[code]["peel_sparse"]) ? DATA[code]["peel_sparse"].xw[last] : null;
+    const xw = d.xw[last];
+    const xwRatio = (xw > 0 && baseXw) ? " (" + (xw / baseXw).toFixed(2) + "x)" : "";
+    rows += "<tr>" +
+      "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
+      "<td>" + X[last].toFixed(2) + "</td>" +
+      "<td>" + (d.fr[last] != null ? d.fr[last].toFixed(4) : "&mdash;") + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + speed + "</td>" +
+      "<td>" + xw.toLocaleString() + xwRatio + "</td>" +
+      "<td>" + d.pk[last].toLocaleString() + "</td>" +
+      "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
+      "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
+      "</tr>";
+  }
+  return "<table><thead><tr><th>Condition</th><th>Erasure rate</th><th>Failure rate</th>" +
+    "<th>GE time / elimination only (ms)</th><th>Fill-in: XOR writes</th><th>Fill-in: peak row size</th>" +
+    "<th>DFS reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
+    rows + "</tbody></table>";
+}
+
+function legendHtml() {
+  return "<div class='legend'>" + CONDS.map(([c, label, color]) =>
+    "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
+}
+
+function render() {
+  const container = document.getElementById("sections");
+  container.innerHTML = "";
+  for (const [code, qubits] of CODES) {
+    if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
+    const X = X_BY_CODE[code];
+    const present = CONDS.filter(([c]) => DATA[code][c]).map(([c]) => c);
+    const missing = CONDS.filter(([c]) => !DATA[code][c]);
+    let missingHtml = "";
+    if (missing.length > 0) {
+      missingHtml = "<p class='missing'>Missing data for: " + missing.map(([c, label]) => label).join(", ") + "</p>";
+    }
+    const sec = document.createElement("section");
+    sec.innerHTML =
+      "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
+      legendHtml() +
+      "<div class='charts'>" +
+        "<div class='chartbox'><h4>Failure rate vs erasure rate</h4><canvas data-code='" + code + "' data-metric='fr'></canvas></div>" +
+        "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
+        "<div class='chartbox'><h4>Fill-in: total XOR element-writes</h4><canvas data-code='" + code + "' data-metric='xw'></canvas></div>" +
+        "<div class='chartbox'><h4>Fill-in: peak row-set size</h4><canvas data-code='" + code + "' data-metric='pk'></canvas></div>" +
+        "<div class='chartbox'><h4>DFS reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
+      "</div>" +
+      missingHtml +
+      "<h3>At the maximum erasure rate (" + X[X.length - 1].toFixed(2) + ")</h3>" +
+      summaryTable(code);
+    container.appendChild(sec);
+  }
+  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, cv.dataset.code, metricSeries(cv.dataset.code, cv.dataset.metric)));
+}
+
+window.addEventListener("load", render);
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>

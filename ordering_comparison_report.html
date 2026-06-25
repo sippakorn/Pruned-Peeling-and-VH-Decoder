@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PPVH Decoder: column-ordering proof (peeling -> Sparse GE, high erasure)</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: #57606a; margin: 0 0 18px; font-size: 14px; }
+  .note { background: #fff8e6; border: 1px solid #f0d9a0; border-radius: 8px;
+          padding: 12px 16px; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+  section { background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+            padding: 18px 20px; margin: 0 0 22px; }
+  h2 { font-size: 19px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 16px 0 8px; color: #424a53; }
+  .muted { color: #8b949e; font-weight: 400; font-size: 14px; }
+  .charts { display: flex; flex-wrap: wrap; gap: 18px; }
+  .chartbox { flex: 1 1 320px; min-width: 300px; }
+  .chartbox h4 { font-size: 13.5px; margin: 0 0 6px; text-align: center; color: #1f2328; }
+  canvas { width: 100%; height: 280px; display: block; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin: 6px 0 0; font-size: 12.5px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 6px; }
+  th, td { border: 1px solid #d0d7de; padding: 7px 10px; text-align: left; }
+  th { background: #f6f8fa; }
+  .missing { color: #8b949e; font-style: italic; font-size: 13.5px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Column-ordering proof &mdash; peeling &rarr; Sparse GE (high erasure)</h1>
+  <p class="sub">PPVH erasure decoder (arXiv:2208.01002). 250 trials per erasure rate (exploratory), fixed RNG seed so all orderings decode the <strong>identical</strong> samples. C_1600 only.</p>
+  <div class="note">
+    All four conditions are the same pipeline (plain M=0 peeling, then one global GF(2) GE over the residual Hz); <strong>only the column/pivot order differs</strong>: natural index order, DFS, minimum-degree, and Reverse Cuthill-McKee (RCM).<br/>
+    <strong>Fill-in is measured directly:</strong> <em>total XOR element-writes</em> (elimination work) and <em>peak row-set size</em> (densest row reached). <strong>GE time is elimination only</strong>; the cost of computing each ordering is tracked separately as <em>reorder time</em>. A good ordering should lower fill-in / GE time; whether it wins overall depends on whether that saving beats its reorder cost (compare the decode-time chart).
+  </div>
+  <div id="sections"></div>
+</div>
+
+<script>
+const X_BY_CODE = {"C_1600": [0.3, 0.31, 0.32, 0.33, 0.34, 0.35000000000000003, 0.36000000000000004, 0.37000000000000005, 0.38000000000000006, 0.39000000000000007, 0.4000000000000001, 0.4100000000000001, 0.4200000000000001, 0.4300000000000001, 0.4400000000000001, 0.4500000000000001]};
+const TRIALS = 250;
+const DATA = {"C_1600": {"natural": {"fr": [0.008, 0.02, 0.024, 0.052, 0.04, 0.056, 0.068, 0.052, 0.084, 0.108, 0.168, 0.144, 0.176, 0.22, 0.24, 0.288], "ge": [0.05768539996643085, 0.06583538296399638, 0.08259520895080641, 0.11018117499770597, 0.15498014398326632, 0.19466941508289892, 0.24166908094775863, 0.400542891889927, 0.7006133489194326, 1.9980840380885638, 3.65185611518973, 6.49569061191869, 9.055887787937536, 11.190720746977604, 12.692296824970981, 13.930971844180021], "re": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "dt": [0.01323016379144974, 0.013326349895796738, 0.013779379816143774, 0.014509501207852736, 0.015014983579982072, 0.015674339571676684, 0.016323661059897857, 0.017010546623962, 0.018740083303884603, 0.02316838381596608, 0.02962390608334681, 0.04116356465150602, 0.05117183721571928, 0.059335852463904305, 0.06550284133199602, 0.07020850642438745], "xw": [6433, 7359, 10075, 15034, 21479, 31511, 35178, 346762, 1457648, 6810885, 17452201, 39253627, 63401927, 96659925, 122013869, 152396790], "pk": [6, 6, 7, 9, 8, 12, 9, 36, 54, 53, 70, 80, 82, 91, 94, 98]}, "dfs": {"fr": [0.008, 0.024, 0.028, 0.06, 0.036, 0.056, 0.072, 0.06, 0.076, 0.12, 0.16, 0.136, 0.184, 0.192, 0.204, 0.308], "ge": [0.06431071906990837, 0.0690352360252291, 0.08656325093761552, 0.1139727900881553, 0.15417388717469294, 0.1837059269018937, 0.22100394000881352, 0.3726348267373396, 0.654179176010075, 1.9559806879551616, 3.5061314769409364, 6.366499583877157, 9.391147384158103, 11.8285497737088, 13.231147579164826, 14.991966016939841], "re": [0.025171611938276328, 0.02828156898613088, 0.034382955098408274, 0.049102211953140795, 0.06703785587160382, 0.08077982006943785, 0.10022005105565768, 0.17818547415663488, 0.32133468602842186, 0.9761846059554955, 1.6741035699960776, 2.8908276279544225, 4.114286763782729, 4.830754291106132, 5.0969516017939895, 5.38453555808519], "dt": [0.014736923151882365, 0.014173106336558704, 0.014760078344668727, 0.015303589519637171, 0.015377766559424345, 0.015161522659822367, 0.0154734038040624, 0.016550925463670863, 0.018595249291742222, 0.02658630894374801, 0.03499531286390265, 0.05170092820719583, 0.06947336721618194, 0.0817067207043292, 0.08809635317965876, 0.09609495817607967], "xw": [6034, 7340, 9494, 14547, 19831, 29788, 32958, 265868, 1189761, 5620290, 15496326, 35431754, 60104687, 96104023, 124687752, 166365740], "pk": [7, 8, 7, 10, 9, 12, 9, 39, 59, 54, 72, 82, 86, 91, 98, 114]}, "min_degree": {"fr": [0.008, 0.02, 0.024, 0.06, 0.048, 0.052, 0.076, 0.048, 0.076, 0.124, 0.168, 0.144, 0.172, 0.216, 0.248, 0.304], "ge": [0.059963030042126775, 0.06996179203270003, 0.08661559697065968, 0.11196387303061783, 0.1567165909218602, 0.22884136812353972, 0.2427139151695883, 0.3907673700596206, 0.6471566588297719, 1.9828279390203534, 3.6701210659521166, 7.340535039067618, 11.140339288132964, 11.363569496912532, 12.145570566033712, 13.541835725074634], "re": [0.02421738102566451, 0.029529196981457062, 0.03691368692670949, 0.04870516397932079, 0.0696385919873137, 0.10794327095209155, 0.11656279696035199, 0.21429867997358087, 0.4212178709130967, 1.4891530340682948, 2.9212997260765405, 6.0430826989904745, 9.12237740989076, 9.362737875970197, 9.99029680188687, 11.066380201082211], "dt": [0.013828444687649608, 0.014360654703283217, 0.014546330747834872, 0.014713251255452633, 0.015481389159802347, 0.01943426425231155, 0.016951196487818378, 0.01743356476823101, 0.01883634159626672, 0.029062370196101257, 0.041608057568199, 0.07155119876738172, 0.09998004952812335, 0.09791677700413856, 0.10285664655215805, 0.11255407318822108], "xw": [6373, 7416, 9921, 14531, 19961, 29485, 33496, 264823, 1192674, 5377924, 14203624, 32307071, 52431515, 81137492, 101769996, 130625211], "pk": [7, 6, 8, 9, 8, 10, 8, 32, 54, 49, 59, 74, 76, 82, 79, 90]}, "rcm": {"fr": [0.008, 0.02, 0.024, 0.036, 0.036, 0.048, 0.068, 0.068, 0.096, 0.06, 0.148, 0.152, 0.18, 0.22, 0.208, 0.288], "ge": [0.0567734179639956, 0.06529769096232485, 0.08437813492491841, 0.11352218508545775, 0.16579089891456533, 0.18907163392577786, 0.22581399585760664, 0.3926485922129359, 0.6873280561994761, 2.063201959055732, 3.695555495956796, 6.550418239159626, 9.327953784100828, 12.02292110194685, 13.201676032986143, 15.662409696888062], "re": [0.022458104009274393, 0.026315892973798327, 0.03414303410681896, 0.04904500988777727, 0.07449982402613387, 0.0824845909664873, 0.10438512808468658, 0.18916632789478172, 0.34230333285813686, 1.026529221009696, 1.7519594081677496, 2.9410358209570404, 4.045202442939626, 4.910315172135597, 5.02053270705801, 5.55487998505123], "dt": [0.013245681823871563, 0.01356344183132751, 0.01427597715560114, 0.014899119700072334, 0.016448708268173504, 0.015497794535942376, 0.015882972692721525, 0.01755226514034439, 0.0196781392681296, 0.027860763915756252, 0.03682059002388269, 0.05297409272473305, 0.0685451880081091, 0.08279778878332582, 0.08745610442018369, 0.0998993981081294], "xw": [5635, 6899, 8764, 13712, 20349, 30052, 33309, 302168, 1223677, 6065717, 15906468, 35735797, 60384626, 93860101, 123404747, 163339091], "pk": [6, 6, 7, 8, 8, 13, 8, 38, 59, 56, 70, 83, 84, 94, 92, 101]}}};
+
+const CONDS = [["natural", "Sparse GE (natural order)", "#2da44e"], ["dfs", "Sparse GE + DFS", "#d1242f"], ["min_degree", "Sparse GE + min-degree", "#8250df"], ["rcm", "Sparse GE + RCM", "#bc4c00"]];
+const CODES = [["C_1600", "1600 qubits"]];
+
+function metricSeries(code, metric) {
+  const X = X_BY_CODE[code];
+  const scale = (metric === "ge" || metric === "re" || metric === "dt") ? 1000.0 : 1.0;
+  const out = [];
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    out.push({ color, pts: X.map((x, i) => [x, DATA[code][cond][metric][i] * scale]) });
+  }
+  return out;
+}
+
+function drawChart(canvas, code, series) {
+  const X = X_BY_CODE[code];
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const mL = 54, mR = 12, mT = 12, mB = 34;
+  const pw = cssW - mL - mR, ph = cssH - mT - mB;
+  let yMax = 0;
+  series.forEach(s => s.pts.forEach(p => { if (p[1] > yMax) yMax = p[1]; }));
+  if (yMax <= 0) yMax = 1;
+  yMax *= 1.12;
+  const xMin = X[0], xMax = X[X.length - 1];
+  const sx = x => mL + (x - xMin) / (xMax - xMin) * pw;
+  const sy = y => mT + ph - (y / yMax) * ph;
+  ctx.strokeStyle = "#d0d7de"; ctx.lineWidth = 1; ctx.strokeRect(mL, mT, pw, ph);
+  ctx.font = "10px -apple-system, Segoe UI, sans-serif";
+  const yticks = 5;
+  for (let i = 0; i <= yticks; i++) {
+    const yv = yMax * i / yticks, py = sy(yv);
+    ctx.strokeStyle = "#eef1f4"; ctx.beginPath(); ctx.moveTo(mL, py); ctx.lineTo(mL + pw, py); ctx.stroke();
+    ctx.fillStyle = "#57606a"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(yv < 1 ? yv.toPrecision(2) : yv.toPrecision(3), mL - 5, py);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  X.forEach((xv, i) => { if (i % 2 === 0) { ctx.fillStyle = "#57606a"; ctx.fillText(xv.toFixed(2), sx(xv), mT + ph + 6); } });
+  ctx.fillStyle = "#424a53"; ctx.fillText("Erasure rate", mL + pw / 2, mT + ph + 19);
+  series.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    s.pts.forEach((p, i) => { const px = sx(p[0]), py = sy(p[1]); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    s.pts.forEach(p => { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 2.4, 0, Math.PI * 2); ctx.fill(); });
+  });
+}
+
+function summaryTable(code) {
+  const X = X_BY_CODE[code];
+  const last = X.length - 1;
+  const baseGe = (DATA[code]["natural"]) ? DATA[code]["natural"].ge[last] : null;
+  const baseXw = (DATA[code]["natural"]) ? DATA[code]["natural"].xw[last] : null;
+  let rows = "";
+  for (const [cond, label, color] of CONDS) {
+    if (!DATA[code] || !DATA[code][cond]) continue;
+    const d = DATA[code][cond];
+    const ge = d.ge[last];
+    const geR = (ge > 0 && baseGe) ? " (" + (baseGe / ge).toFixed(2) + "x)" : "";
+    const xw = d.xw[last];
+    const xwR = (xw > 0 && baseXw) ? " (" + (xw / baseXw).toFixed(2) + "x)" : "";
+    rows += "<tr>" +
+      "<td><span class='swatch' style='background:" + color + ";vertical-align:middle;margin-right:6px'></span>" + label + "</td>" +
+      "<td>" + X[last].toFixed(2) + "</td>" +
+      "<td>" + (d.fr[last] != null ? d.fr[last].toFixed(4) : "&mdash;") + "</td>" +
+      "<td>" + (ge * 1000).toFixed(3) + geR + "</td>" +
+      "<td>" + xw.toLocaleString() + xwR + "</td>" +
+      "<td>" + d.pk[last].toLocaleString() + "</td>" +
+      "<td>" + (d.re[last] * 1000).toFixed(3) + "</td>" +
+      "<td>" + (d.dt[last] * 1000).toFixed(3) + "</td>" +
+      "</tr>";
+  }
+  return "<table><thead><tr><th>Ordering</th><th>Erasure rate</th><th>Failure rate</th>" +
+    "<th>GE time / elimination only (ms)</th><th>Fill-in: XOR writes</th><th>Fill-in: peak row size</th>" +
+    "<th>Reorder time (ms)</th><th>Mean decode time (ms)</th></tr></thead><tbody>" +
+    rows + "</tbody></table>";
+}
+
+function legendHtml() {
+  return "<div class='legend'>" + CONDS.map(([c, label, color]) =>
+    "<span><i class='swatch' style='background:" + color + "'></i>" + label + "</span>").join("") + "</div>";
+}
+
+function render() {
+  const container = document.getElementById("sections");
+  container.innerHTML = "";
+  for (const [code, qubits] of CODES) {
+    if (!DATA[code] || Object.keys(DATA[code]).length === 0) continue;
+    const X = X_BY_CODE[code];
+    const missing = CONDS.filter(([c]) => !DATA[code][c]);
+    let missingHtml = "";
+    if (missing.length > 0) {
+      missingHtml = "<p class='missing'>Missing data for: " + missing.map(([c, label]) => label).join(", ") + "</p>";
+    }
+    const sec = document.createElement("section");
+    sec.innerHTML =
+      "<h2>" + code + " <span class='muted'>(" + qubits + ")</span></h2>" +
+      legendHtml() +
+      "<div class='charts'>" +
+        "<div class='chartbox'><h4>Failure rate vs erasure rate</h4><canvas data-code='" + code + "' data-metric='fr'></canvas></div>" +
+        "<div class='chartbox'><h4>GE time / elimination only (ms)</h4><canvas data-code='" + code + "' data-metric='ge'></canvas></div>" +
+        "<div class='chartbox'><h4>Fill-in: total XOR element-writes</h4><canvas data-code='" + code + "' data-metric='xw'></canvas></div>" +
+        "<div class='chartbox'><h4>Fill-in: peak row-set size</h4><canvas data-code='" + code + "' data-metric='pk'></canvas></div>" +
+        "<div class='chartbox'><h4>Reorder time (ms)</h4><canvas data-code='" + code + "' data-metric='re'></canvas></div>" +
+        "<div class='chartbox'><h4>Mean decode time (ms)</h4><canvas data-code='" + code + "' data-metric='dt'></canvas></div>" +
+      "</div>" +
+      missingHtml +
+      "<h3>At the maximum erasure rate (" + X[X.length - 1].toFixed(2) + ")</h3>" +
+      summaryTable(code);
+    container.appendChild(sec);
+  }
+  document.querySelectorAll("canvas[data-code]").forEach(cv => drawChart(cv, cv.dataset.code, metricSeries(cv.dataset.code, cv.dataset.metric)));
+}
+
+window.addEventListener("load", render);
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>

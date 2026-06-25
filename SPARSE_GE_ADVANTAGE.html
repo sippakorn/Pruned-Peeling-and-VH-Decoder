@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sparse GE — Outstanding Use Case &amp; Advantages</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2430; --muted:#5c6675;
+    --blue:#2563eb; --green:#0a8f5f; --amber:#b7791f; --pink:#c81e63; --violet:#6d28d9;
+    --line:#e2e6ec;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:40px 24px 120px}
+  header.hero{
+    border-bottom:1px solid var(--line); padding-bottom:26px; margin-bottom:10px;
+  }
+  h1{font-size:32px; line-height:1.2; margin:0 0 8px}
+  h1 .sub{display:block; font-size:16px; color:var(--muted); font-weight:400; margin-top:8px}
+  h2{font-size:25px; margin:54px 0 6px; padding-top:16px; border-top:1px solid var(--line)}
+  h3{font-size:20px; margin:34px 0 6px; color:var(--blue)}
+  h4{font-size:16px; margin:20px 0 4px; color:var(--violet); letter-spacing:.3px}
+  p{margin:10px 0}
+  a{color:var(--blue)}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.92em;
+       background:#f1f3f7; border:1px solid var(--line); border-radius:5px; padding:1px 5px}
+  .lead{font-size:18px; color:#3a4452}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px;
+       border:1px solid var(--line); color:var(--muted); margin-right:6px}
+  /* boxes */
+  .box{border-radius:12px; padding:16px 18px; margin:16px 0; border:1px solid var(--line); background:var(--panel)}
+  .box .label{font-size:12px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:8px}
+  .idea{border-left:4px solid var(--blue)}      .idea .label{color:var(--blue)}
+  .pnp{border-left:4px solid var(--amber); background:#fff8e6}   .pnp .label{color:var(--amber)}
+  .codept{border-left:4px solid var(--green)}   .codept .label{color:var(--green)}
+  .note{border-left:4px solid var(--pink); background:#fdeef3}  .note .label{color:var(--pink)}
+  pre{margin:10px 0 4px; background:#f1f3f7; border:1px solid var(--line); border-radius:8px;
+      padding:12px 14px; overflow-x:auto; font-size:13.5px; line-height:1.5}
+  pre code{background:none; border:none; padding:0}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .matrix{display:inline-block; background:#f1f3f7; border:1px solid var(--line);
+          border-radius:8px; padding:8px 14px; margin:6px 8px 6px 0; white-space:pre; font-size:14px}
+  .fileref{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+           color:var(--green); display:block; margin-bottom:6px}
+  .toc{columns:2; column-gap:30px; font-size:14.5px}
+  .toc a{display:block; padding:3px 0; text-decoration:none; color:#344256}
+  .toc a:hover{color:var(--blue)}
+  .pill{color:var(--amber)}
+  table.params{border-collapse:collapse; margin:14px 0; font-size:14px; width:100%}
+  table.params td, table.params th{border:1px solid var(--line); padding:7px 11px; text-align:left; vertical-align:top}
+  table.params th{background:#f1f3f7; color:var(--muted)}
+  .kbd{font-family:monospace; background:#f1f3f7; border:1px solid var(--line); border-bottom-width:2px;
+       border-radius:5px; padding:1px 6px; font-size:.9em}
+  hr{border:none; border-top:1px solid var(--line); margin:30px 0}
+  .footer{color:var(--muted); font-size:13px; margin-top:60px; border-top:1px solid var(--line); padding-top:18px}
+  .grid{color:var(--violet)}
+  .small{font-size:13.5px; color:var(--muted)}
+  .win{color:var(--green); font-weight:700}
+  .lose{color:var(--pink); font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Sparse&nbsp;GE &mdash; Outstanding Use Case &amp; Advantages
+    <span class="sub">When the custom GF(2) sparse Gaussian elimination beats the dense one, why, and how it
+    cashes in on a DFS&#8209;reordered residual. Each idea is refreshed, given a tiny pen&#8209;and&#8209;paper
+    example, then linked to the exact code and to real numbers from this project.</span>
+  </h1>
+  <span class="tag">GF(2) linear algebra</span>
+  <span class="tag">Sparse vs dense</span>
+  <span class="tag">Fill-in &amp; DFS ordering</span>
+  <span class="tag">PPVH erasure decoder</span>
+</header>
+
+<p class="lead">Both backends compute the same RREF and the same minimum-weight solution of
+<span class="mono">H&middot;e = s (mod 2)</span>. They differ only in cost. The headline:
+<strong>Sparse GE outperforms Dense GE when the system is large, low-density, has low fill-in, and only a
+small fraction of its columns are active</strong> &mdash; which is exactly the regime of LDPC erasure decoding.
+A DFS reordering of the residual makes that advantage bigger by keeping elimination local.</p>
+
+<div class="box idea">
+  <div class="label">The 30-second picture</div>
+  Dense GE stores every 0 and 1 and sweeps the <em>full</em> matrix width on each pivot &mdash; cost
+  <span class="mono">O(m&middot;n)</span>, fast per element (NumPy/C) but it processes everything. Sparse GE stores
+  only the 1-positions and XORs them as set symmetric differences &mdash; cost <span class="mono">O(nnz)</span>, slow
+  per operation (Python) but it does far fewer operations. Sparse wins when the operation-count saving
+  (<span class="mono">nnz &#8810; m&middot;n</span>) beats Python&rsquo;s overhead. <strong>DFS</strong> reorders the
+  pivots so elimination stays local on the Tanner graph, which keeps <em>nnz</em> from growing (low fill-in) and
+  widens the gap.
+</div>
+
+<h3>Contents</h3>
+<nav class="toc">
+  <a href="#cost">1 &middot; The two cost models</a>
+  <a href="#usecase">2 &middot; The outstanding use case</a>
+  <a href="#evidence">3 &middot; Evidence from this project</a>
+  <a href="#dense">4 &middot; When dense still wins</a>
+  <a href="#dfs">5 &middot; How sparse cashes in on a DFS residual</a>
+  <a href="#caveat">6 &middot; Caveat: it is not free</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="cost">1 &middot; The two cost models</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The entire dense-vs-sparse story is two cost formulas. <strong>Dense:</strong> a pivot clears a column from every
+  row at once via a vectorized outer-product XOR over the whole remaining block &mdash; it touches all
+  <span class="mono">m&middot;n</span> entries, zeros included. <strong>Sparse:</strong> a pivot XORs the pivot row
+  (a small set) into only the rows that actually contain that column &mdash; it touches roughly
+  <span class="mono">nnz</span> entries. So sparse is worthwhile precisely when the matrix is far from full.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">Hypergraph_Product_Code_Construction_v3.py &middot; standard_form(...) &mdash; dense</span>
+<pre><code>flip = np.outer(col, aijn)       # full m x (n-j) block
+M[:, j:] = M[:, j:] ^ flip       # XOR the WHOLE block, zeros included  -&gt; O(m*n)</code></pre>
+  <span class="fileref">utilities.py &middot; _sparse_solve_classical_syndrome_with_erasure(...) &mdash; sparse</span>
+<pre><code>for idx in range(num_rows):
+    if (idx != pivot_row_index) and (j in rows[idx]):
+        rows[idx] ^= pivot_set   # touch only rows holding column j, only their 1s  -&gt; O(nnz)</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="usecase">2 &middot; The outstanding use case</h2>
+
+<div class="box idea">
+  <div class="label">Key idea &mdash; where sparse shines</div>
+  Sparse GE is at its best when <strong>all</strong> of these hold &mdash; and they hold for HGP / LDPC erasure decoding:
+  <ul>
+    <li><strong>Large, low-density matrix.</strong> LDPC checks have constant low weight (here a (3,4) family), so
+        <span class="mono">nnz &#8810; m&middot;n</span>. The bigger the code, the bigger the win.</li>
+    <li><strong>Small active fraction.</strong> Only the <em>erased</em> columns are ever inserted; dense still sweeps
+        the full width even after zeroing the non-erased columns.</li>
+    <li><strong>Low fill-in.</strong> If elimination keeps rows sparse, the <span class="mono">O(nnz)</span> advantage
+        survives to the end of the solve.</li>
+  </ul>
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; the most extreme case: the global Hz solve</div>
+  In the peeling&rarr;GE pipeline the matrix is the <em>entire</em> <span class="mono">H<sub>z</sub></span>
+  (num_checks &times; num_qubits), but only the residual erased columns are active. Suppose a 1600-qubit code with
+  ~700 erased columns at high erasure:
+  <div class="matrix">Dense  : sweeps all  ~checks x 1600 columns   (every pivot, zeros included)
+Sparse : touches only the ~700 erased columns' 1s   (handful per row)</div>
+  Dense pays for the whole width on every pivot; sparse pays only for what is erased. At <em>low</em> erasure the
+  residual is a tiny sliver of a huge matrix &mdash; this is where the ratio is most lopsided in sparse&rsquo;s favor.
+</div>
+
+<table class="params">
+<tr><th>Regime</th><th>Who wins</th><th>Why</th></tr>
+<tr><td>Large sparse LDPC, small erased fraction</td><td class="win">Sparse</td><td><span class="mono">nnz &#8810; m&middot;n</span>; dense wastes work on zeros</td></tr>
+<tr><td>Global H<sub>z</sub> solve (peeling&rarr;GE)</td><td class="win">Sparse</td><td>full huge width vs only-erased columns</td></tr>
+<tr><td>Low fill-in residual (tree / near-tree)</td><td class="win">Sparse</td><td>row-sets stay small throughout</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="evidence">3 &middot; Evidence from this project</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Even on the <em>small</em> per-cluster classical solves of the cascade decoder, sparse already beats dense on the
+  625-qubit (3,4)-LDPC code. The two runs used the same seed, so they performed the <strong>identical</strong> number
+  of GE calls on the identical matrices &mdash; an apples-to-apples timing comparison.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code &mdash; measured numbers (C_625, erasure 0.32, 296 GE calls each)</div>
+  <span class="fileref">C_625_dense_1000trials_*.txt  vs  C_625_sparse_1000trials_*.txt</span>
+  <table class="params">
+  <tr><th>Backend</th><th>Mean GE time / call</th><th>Total GE time</th><th>Speedup</th></tr>
+  <tr><td>Dense</td><td>160.7 &micro;s</td><td>0.04755 s</td><td>1.0&times;</td></tr>
+  <tr><td>Sparse</td><td class="win">34.0 &micro;s</td><td class="win">0.01007 s</td><td class="win">~4.7&times;</td></tr>
+  </table>
+  (At erasure 0.30 the per-call ratio is ~5.1&times;.) The advantage grows with code size and is far larger for the
+  global <span class="mono">H<sub>z</sub></span> solve, where dense would sweep the entire matrix width.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dense">4 &middot; When dense still wins</h2>
+
+<div class="box note">
+  <div class="label">Heads-up &mdash; sparse is not always faster</div>
+  Sparse loses its edge exactly when its assumptions break:
+  <ul>
+    <li><strong>Tiny matrices.</strong> NumPy&rsquo;s vectorized C XOR amortizes its overhead; Python set iteration
+        cannot compete on very small clusters.</li>
+    <li><strong>Dense / heavy fill-in systems.</strong> As row-sets grow toward full rows, sparse pays Python overhead
+        on nearly every element and loses to the vectorized path.</li>
+    <li><strong>Very high erasure.</strong> The residual becomes large and dense-like, eroding the
+        <span class="mono">nnz</span> savings (you can see sparse&rsquo;s per-call time creep up with erasure).</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dfs">5 &middot; How sparse cashes in on a DFS residual</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Sparse GE&rsquo;s cost is governed by <strong>fill-in</strong>: each XOR (<span class="mono">rows[idx] ^= pivot_set</span>)
+  can <em>add</em> new 1-positions to a row, and how much it adds depends on the <em>order</em> in which columns become
+  pivots. <strong>DFS</strong> walks the Tanner graph of the residual depth-first and emits a pivot order in which
+  consecutive columns are graph-neighbors. Eliminating along that order keeps every XOR confined to a small local
+  cluster of rows, so fill-in &mdash; and therefore <span class="mono">nnz</span> &mdash; stays small.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py &middot; dfs_order(...) builds the Tanner subgraph and walks it</span>
+<pre><code>neighbor_cols = set()
+for r in col_to_rows[c]:          # checks touching column c
+    neighbor_cols |= row_to_cols[r]   # other erased columns sharing those checks
+for nc in sorted(neighbor_cols, reverse=True):
+    if (nc not in visited_cols):
+        stack.append(nc)         # depth-first: go to a neighbor next</code></pre>
+  <span class="fileref">utilities.py &middot; _sparse_solve uses that order as the pivot sequence</span>
+<pre><code>col_order = dfs_order(H, erased_cols_set)   # (reorder == "dfs")
+candidate_cols = list(col_order) + [aug_col]   # pivots are chosen in DFS order</code></pre>
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; a chain residual</div>
+  After peeling strips the dangling parts, suppose the residual is a chain
+  <span class="mono">c0 &mdash; chk &mdash; c1 &mdash; chk &mdash; c2 &mdash; chk &mdash; c3</span>.
+  <div class="matrix">DFS order (c0,c1,c2,c3):  each elimination merges only into the
+                          ONE neighbouring row  -&gt;  ~zero fill-in
+                          (this is peeling, generalised to GE)
+
+Jumpy order (hub first):  one pivot links many far-apart rows
+                          -&gt;  a dense block forms, every later XOR pays for it</div>
+  Same matrix, same answer &mdash; but the DFS order keeps the row-sets tiny, so every
+  <span class="mono">^=</span> the sparse solver performs is cheap.
+</div>
+
+<div class="box idea">
+  <div class="label">Key idea &mdash; why DFS pairs with the post-peeling residual</div>
+  Peeling has already removed the degree-1 (dangling) structure, leaving the cyclic 2-core. That core is where naive
+  column order would generate long-range fill-in. DFS orders the core so GE walks it locally, so the sparse
+  representation never blows up &mdash; the elimination (&ldquo;GE time&rdquo;) shrinks accordingly.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="caveat">6 &middot; Caveat: it is not free</h2>
+
+<div class="box note">
+  <div class="label">Heads-up</div>
+  DFS has its own cost &mdash; building the adjacency and walking it &mdash; which is measured <em>separately</em>
+  (<span class="mono">total_reorder_time</span>) and excluded from the reported &ldquo;GE time / elimination only&rdquo;.
+  On systems that are already nearly fill-in-free (low erasure, mostly resolved by peeling) the elimination DFS saves
+  can be smaller than the reordering it adds, so it is a net loss there. DFS pays off when the residual is large and
+  cyclic enough that natural-order elimination would otherwise generate real fill-in &mdash; the high-erasure end of
+  the sweep. The honest way to judge it is to compare, across the full erasure range, the <span class="mono">GE time
+  saved</span> against the <span class="mono">reorder time spent</span>.
+</div>
+
+<div class="footer">
+  Companion to <span class="mono">PROJECT_EXPLAINED.html</span> and <span class="mono">SPARSE_VS_DENSE_GE.html</span>.
+  Code: <span class="mono">standard_form</span> in <span class="mono">Hypergraph_Product_Code_Construction_v3.py</span>;
+  <span class="mono">_sparse_solve_classical_syndrome_with_erasure</span>, <span class="mono">dfs_order</span>,
+  <span class="mono">perform_classical_syndrome_analysis_with_erasure</span> in <span class="mono">utilities.py</span>.
+  Measured numbers from the seed-matched C_625 dense/sparse cascade runs. Both backends are exact GF(2) and, for a
+  fixed column order, return the identical minimum-weight solution.
+</div>
+
+</div>
+</body>
+</html>

@@ -32,6 +32,12 @@ SOLVER_STATS = {
     "reorder_time": 0.0,  # cumulative time spent computing the DFS column ordering (seconds)
     "total_rows": 0,      # cumulative number of check-rows passed to GE
     "total_cols": 0,      # cumulative number of erased columns passed to GE
+    # --- Fill-in instrumentation (sparse backend only) ---
+    # Direct, order-dependent measures of fill-in so DFS vs natural order can be compared
+    # numerically instead of inferred from ge_time. Both are produced inside _sparse_solve.
+    "xor_element_writes": 0,  # cumulative element-writes done by row XORs (sum of |pivot_set|
+                              # over every rows[idx] ^= pivot_set) -- the elimination work / fill activity
+    "peak_row_size": 0,       # largest row-set size reached during elimination (peak density)
 }
 
 
@@ -39,8 +45,8 @@ def set_solver_config(backend="dense", reorder=None):
     """Set the classical-solve backend and reorder strategy for the decoder."""
     if backend not in ("dense", "sparse"):
         raise ValueError("backend must be 'dense' or 'sparse'.")
-    if reorder not in (None, "dfs"):
-        raise ValueError("reorder must be None or 'dfs'.")
+    if reorder not in (None, "dfs", "min_degree", "rcm"):
+        raise ValueError("reorder must be None, 'dfs', 'min_degree', or 'rcm'.")
     SOLVER_CONFIG["backend"] = backend
     SOLVER_CONFIG["reorder"] = reorder
 
@@ -52,6 +58,8 @@ def reset_solver_stats():
     SOLVER_STATS["reorder_time"] = 0.0
     SOLVER_STATS["total_rows"] = 0
     SOLVER_STATS["total_cols"] = 0
+    SOLVER_STATS["xor_element_writes"] = 0
+    SOLVER_STATS["peak_row_size"] = 0
 
 
 def snapshot_solver_stats():
@@ -1125,8 +1133,10 @@ def _sparse_solve_classical_syndrome_with_erasure(H,s,E_index_set,reorder=None):
     erased_cols = [c for c in E_index_set if (0 <= c < num_bits)]
     
     # Build the augmented rows as sets of column indices.
+    # Track the peak row-set size as a direct fill-in measure (locals keep the hot loop fast).
     erased_cols_set = set(erased_cols)
     rows = []
+    peak_row_size = 0
     for r in range(num_rows):
         row_set = set()
         H_row = H[r]
@@ -1136,12 +1146,24 @@ def _sparse_solve_classical_syndrome_with_erasure(H,s,E_index_set,reorder=None):
         if s[r]:
             row_set.add(aug_col)
         rows.append(row_set)
+        if len(row_set) > peak_row_size:
+            peak_row_size = len(row_set)
+
+    # Cumulative element-writes performed by row XORs (the elimination work / fill activity).
+    xor_element_writes = 0
     
     # Determine the order in which columns are considered as pivot candidates.
-    if (reorder == "dfs"):
-        # Time the reordering separately so it can be excluded from the GE (elimination) time.
+    # Any non-None reorder strategy is timed separately so its cost is excluded from GE time.
+    if (reorder is not None):
         reorder_start_time = time.perf_counter()
-        col_order = dfs_order(H, erased_cols_set)
+        if (reorder == "dfs"):
+            col_order = dfs_order(H, erased_cols_set)
+        elif (reorder == "min_degree"):
+            col_order = min_degree_order(H, erased_cols_set)
+        elif (reorder == "rcm"):
+            col_order = rcm_order(H, erased_cols_set)
+        else:
+            col_order = sorted(erased_cols)
         SOLVER_STATS["reorder_time"] += (time.perf_counter() - reorder_start_time)
     else:
         # Natural increasing order reproduces the dense RREF exactly.
@@ -1173,12 +1195,23 @@ def _sparse_solve_classical_syndrome_with_erasure(H,s,E_index_set,reorder=None):
         # Promote this row to a pivot row for column j and fully eliminate column j elsewhere.
         available_rows.remove(pivot_row_index)
         pivot_set = rows[pivot_row_index]
+        pivot_len = len(pivot_set)
         for idx in range(num_rows):
             if (idx != pivot_row_index) and (j in rows[idx]):
                 rows[idx] ^= pivot_set   # in-place GF(2) row addition (symmetric difference)
+                # Fill-in instrumentation: each XOR toggles ~|pivot_set| elements; track the
+                # cumulative element-writes and the peak row density (both order-dependent).
+                xor_element_writes += pivot_len
+                if len(rows[idx]) > peak_row_size:
+                    peak_row_size = len(rows[idx])
         
         pivot_row_sets[j] = pivot_set
         pivot_cols_in_order.append(j)
+    
+    # Publish the fill-in measures for this solve into the shared stats.
+    SOLVER_STATS["xor_element_writes"] += xor_element_writes
+    if peak_row_size > SOLVER_STATS["peak_row_size"]:
+        SOLVER_STATS["peak_row_size"] = peak_row_size
     
     # The minimum-weight solution sets every free variable to 0; each pivot variable
     # takes the (reduced) value of the augmented column in its pivot row.
@@ -1240,6 +1273,99 @@ def dfs_order(H,E_index_set):
                 if (nc not in visited_cols):
                     stack.append(nc)
     
+    return order
+
+
+
+# Helper: build the column-intersection (elimination) graph induced by the erased columns.
+# Two columns are adjacent if they share at least one check row. Returns {col: set(neighbor cols)}.
+# This is the graph that fill-reducing orderings (minimum-degree, RCM) operate on.
+
+def _build_column_graph(H, E_index_set):
+    num_rows = np.shape(H)[0]
+    num_bits = np.shape(H)[1]
+    erased_cols = sorted(c for c in E_index_set if (0 <= c < num_bits))
+
+    row_to_cols = {}
+    for c in erased_cols:
+        H_col = H[:, c]
+        for r in range(num_rows):
+            if H_col[r]:
+                row_to_cols.setdefault(r, []).append(c)
+
+    adj = {c: set() for c in erased_cols}
+    for r, cols in row_to_cols.items():
+        for c in cols:
+            adj[c].update(cols)
+    for c in erased_cols:
+        adj[c].discard(c)
+    return erased_cols, adj
+
+
+
+# Minimum-degree ordering of the erased columns (classic fill-reducing heuristic).
+#
+# Repeatedly eliminate the lowest-degree column in the elimination graph; when a column is
+# eliminated its remaining neighbors become a clique (the fill it would create). Picking the
+# lowest-degree vertex each step tends to minimize total fill-in. The returned order is used as
+# the pivot-selection order for the sparse GE solve.
+
+def min_degree_order(H, E_index_set):
+    erased_cols, adj = _build_column_graph(H, E_index_set)
+
+    remaining = set(erased_cols)
+    order = []
+    while remaining:
+        # Pick the remaining column of minimum current degree (ties broken by index).
+        c = min(remaining, key=lambda x: (len(adj[x]), x))
+        order.append(c)
+        remaining.discard(c)
+
+        # Surviving neighbors form a clique (this is the fill eliminating c would induce).
+        neigh = [u for u in adj[c] if u in remaining]
+        neigh_set = set(neigh)
+        for u in neigh:
+            adj[u].update(neigh_set)
+            adj[u].discard(u)
+            adj[u].discard(c)
+
+    return order
+
+
+
+# Reverse Cuthill-McKee (RCM) ordering of the erased columns (bandwidth-reducing heuristic).
+#
+# This is the "proper root + traversal" idea done correctly: start a BFS from a low-degree
+# (pseudo-peripheral approximation) node, visit neighbors in ascending-degree order, then REVERSE
+# the whole sequence. Reversing is what turns the level structure into a low-fill elimination order.
+# Disconnected pieces are covered by restarting from the lowest-degree unvisited column.
+
+def rcm_order(H, E_index_set):
+    erased_cols, adj = _build_column_graph(H, E_index_set)
+    degree = {c: len(adj[c]) for c in erased_cols}
+
+    visited = set()
+    order = []
+
+    # Process columns in ascending static degree so each new component starts from a low-degree node.
+    for start in sorted(erased_cols, key=lambda x: (degree[x], x)):
+        if (start in visited):
+            continue
+        visited.add(start)
+        queue = [start]
+        head = 0
+        while head < len(queue):
+            c = queue[head]
+            head += 1
+            order.append(c)
+            # Enqueue unvisited neighbors in ascending-degree order.
+            nbrs = sorted((u for u in adj[c] if u not in visited), key=lambda x: (degree[x], x))
+            for u in nbrs:
+                visited.add(u)
+                queue.append(u)
+
+    # Reverse the Cuthill-McKee order to get Reverse Cuthill-McKee.
+    order.reverse()
     return order
 
 
