@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Why DFS-Reorder falls behind Sparse GE and Dense GE</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2430; --muted:#5c6675;
+    --blue:#2563eb; --green:#0a8f5f; --amber:#b7791f; --pink:#c81e63; --violet:#6d28d9;
+    --line:#e2e6ec;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:40px 24px 120px}
+  header.hero{
+    border-bottom:1px solid var(--line); padding-bottom:26px; margin-bottom:10px;
+  }
+  h1{font-size:32px; line-height:1.2; margin:0 0 8px}
+  h1 .sub{display:block; font-size:16px; color:var(--muted); font-weight:400; margin-top:8px}
+  h2{font-size:25px; margin:54px 0 6px; padding-top:16px; border-top:1px solid var(--line)}
+  h3{font-size:20px; margin:34px 0 6px; color:var(--blue)}
+  h4{font-size:16px; margin:20px 0 4px; color:var(--violet); letter-spacing:.3px}
+  p{margin:10px 0}
+  a{color:var(--blue)}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.92em;
+       background:#f1f3f7; border:1px solid var(--line); border-radius:5px; padding:1px 5px}
+  .lead{font-size:18px; color:#3a4452}
+  .tag{display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px;
+       border:1px solid var(--line); color:var(--muted); margin-right:6px}
+  .box{border-radius:12px; padding:16px 18px; margin:16px 0; border:1px solid var(--line); background:var(--panel)}
+  .box .label{font-size:12px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:8px}
+  .idea{border-left:4px solid var(--blue)}      .idea .label{color:var(--blue)}
+  .pnp{border-left:4px solid var(--amber); background:#fff8e6}   .pnp .label{color:var(--amber)}
+  .codept{border-left:4px solid var(--green)}   .codept .label{color:var(--green)}
+  .note{border-left:4px solid var(--pink); background:#fdeef3}  .note .label{color:var(--pink)}
+  pre{margin:10px 0 4px; background:#f1f3f7; border:1px solid var(--line); border-radius:8px;
+      padding:12px 14px; overflow-x:auto; font-size:13.5px; line-height:1.5}
+  pre code{background:none; border:none; padding:0}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .matrix{display:inline-block; background:#f1f3f7; border:1px solid var(--line);
+          border-radius:8px; padding:8px 14px; margin:6px 8px 6px 0; white-space:pre; font-size:14px}
+  .fileref{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+           color:var(--green); display:block; margin-bottom:6px}
+  .toc{columns:2; column-gap:30px; font-size:14.5px}
+  .toc a{display:block; padding:3px 0; text-decoration:none; color:#344256}
+  .toc a:hover{color:var(--blue)}
+  table.params{border-collapse:collapse; margin:14px 0; font-size:14px; width:100%}
+  table.params td, table.params th{border:1px solid var(--line); padding:7px 11px; text-align:left; vertical-align:top}
+  table.params th{background:#f1f3f7; color:var(--muted)}
+  .win{color:var(--green); font-weight:700}
+  .lose{color:var(--pink); font-weight:700}
+  .footer{color:var(--muted); font-size:13px; margin-top:60px; border-top:1px solid var(--line); padding-top:18px}
+  .small{font-size:13.5px; color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Why DFS-Reorder falls behind Sparse&nbsp;GE and Dense&nbsp;GE
+    <span class="sub">A reading of <span class="mono">decoder_comparison_report.html</span>, with the fill-in
+    numbers that report does not plot. The theoretical claim &mdash; reordering should make Gaussian
+    elimination faster &mdash; is true in general. It is not true for the residuals this decoder actually solves.</span>
+  </h1>
+  <span class="tag">BEC / erasure decoding</span>
+  <span class="tag">Sparse GF(2) GE</span>
+  <span class="tag">Fill-in vs reorder cost</span>
+  <span class="tag">Simpler decoder</span>
+</header>
+
+<p class="lead">Open <a href="decoder_comparison_report.html">decoder_comparison_report.html</a> and the red
+<span class="mono">Sparse + DFS</span> curve does not pull away from green Sparse GE. On wall-clock it is
+indistinguishable from both Sparse and Dense. That is not a measurement glitch. DFS is paying a reorder tax
+that the elimination never earns back, and on the 2-core left after peeling it often <em>increases</em> fill-in
+rather than reducing it. The simpler BEC decoder that the numbers support is
+<strong>plain peeling, then one Sparse GE in natural column order &mdash; no DFS, no VH, no cluster tree</strong>.</p>
+
+<h3>Contents</h3>
+<nav class="toc">
+  <a href="#what">1 &middot; What the comparison report actually ran</a>
+  <a href="#read">2 &middot; How to read the four charts</a>
+  <a href="#theory">3 &middot; Why theory said DFS should win</a>
+  <a href="#why">4 &middot; Four reasons it does not</a>
+  <a href="#fillin">5 &middot; Direct fill-in evidence (sister experiments)</a>
+  <a href="#bec">6 &middot; The simpler BEC decoder the numbers point to</a>
+  <a href="#takeaway">7 &middot; Takeaway</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="what">1 &middot; What the comparison report actually ran</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  <span class="mono">decoder_comparison_report.html</span> is the <strong>full paper cascade</strong>
+  (M=0 peeling &rarr; M=1 fully-erased generators &rarr; M=2 VH products &rarr; cluster decoder).
+  The three conditions swap only the Gaussian-elimination backend <em>inside the leftover classical clusters</em>.
+  They are not three different decoders. They are three solvers for the same tiny leftover systems.
+</div>
+
+<table class="params">
+<tr><th></th><th>Dense GF(2) GE</th><th>Sparse GF(2) GE</th><th>Sparse + DFS</th></tr>
+<tr><td>Pipeline</td><td colspan="3">identical cascade</td></tr>
+<tr><td>GE backend</td><td><code>standard_form</code> dense Gauss&ndash;Jordan</td><td>set-XOR sparse GE</td><td>same sparse GE</td></tr>
+<tr><td>Column / pivot order</td><td>natural (ascending index)</td><td>natural</td><td>DFS on the column graph</td></tr>
+<tr><td>Codes, trials, seed</td><td colspan="3">Toric3 (18 qubits) and C_625 (625 qubits); 1000 trials/rate; same seed</td></tr>
+<tr><td>Erasure sweep</td><td colspan="3">0.02 &rarr; 0.32</td></tr>
+</table>
+
+<p class="small">Source files: <span class="mono">C_625_{dense,sparse,sparse_dfs}_1000trials_2026-06-23.txt</span>
+and the matching Toric3 files. Generated by <span class="mono">generate_comparison_report.py</span>.</p>
+
+<div class="box codept">
+  <div class="label">In the code &mdash; how small those leftover systems are</div>
+  <span class="fileref">peeling_cluster_decoder.py &middot; cluster_syndrome_analysis_with_zeroing</span>
+  A leftover cluster is one row of horizontal qubits or one column of vertical qubits. It is solved in the
+  <em>classical</em> seed matrix, not in the full quantum <span class="mono">H<sub>z</sub></span>:
+<pre><code>if horizontal:  classical_H = HGP_code.H2.copy()     # C_625: 15 x 20
+else:           classical_H = HGP_code.H1.T.copy()   # C_625: 20 x 15</code></pre>
+  <span class="fileref">PEG_HGP_code_(3,4)_family_n625_k25_classicalH.txt</span> starts <code>15 20</code>.
+  So every GE call in this report is on a matrix with <strong>at most 20 columns</strong>. Fill-in on 20 columns
+  cannot be large, and no pivot-ordering heuristic has room to pay for itself.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; who even reaches GE?</div>
+  C_625, erasure 0.32, 1000 trials (all three conditions, identical samples):
+  <div class="matrix">M=0 peeling already succeeds     625 / 1000
++ M=1 / M=2 VH                    713 / 1000
++ cluster decoder (where GE lives) 952 / 1000  (FR = 0.048)
+GE calls across 1000 trials:      296
+mean GE time / call (sparse):     34 &micro;s</div>
+  Two thirds of trials never touch GE. The ones that do hand it a 15&times;20 classical leftover.
+  That is the stage on which DFS was asked to outperform Sparse and Dense.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="read">2 &middot; How to read the four charts</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The report splits cost on purpose. <strong>GE time is elimination only</strong>; DFS construction lives in
+  <em>DFS reorder time</em>; <em>mean decode time</em> is the number a user actually pays. Adding GE + reorder
+  is the honest cost of &ldquo;Sparse + DFS&rdquo; as a solver. Decode time is the honest cost of the decoder.
+</div>
+
+<h3>C_625 at erasure 0.32 (the summary table on the report)</h3>
+<table class="params">
+<tr><th>Condition</th><th>Failure rate</th><th>GE / elimination only</th><th>DFS reorder</th><th>GE + reorder</th><th>Mean decode / trial</th></tr>
+<tr><td>Dense GF(2) GE</td><td>0.048</td><td>47.55&nbsp;ms <span class="small">(total over 1000 trials)</span></td><td>0</td><td>47.55&nbsp;ms</td><td>36.02&nbsp;ms</td></tr>
+<tr><td>Sparse GF(2) GE</td><td>0.048</td><td class="win">10.07&nbsp;ms (4.7&times; vs dense)</td><td>0</td><td class="win">10.07&nbsp;ms</td><td>35.96&nbsp;ms</td></tr>
+<tr><td>Sparse + DFS</td><td>0.047</td><td>9.49&nbsp;ms (5.0&times; vs dense)</td><td class="lose">8.58&nbsp;ms</td><td class="lose">18.07&nbsp;ms</td><td>35.90&nbsp;ms</td></tr>
+</table>
+
+<div class="box note">
+  <div class="label">Heads-up &mdash; DFS is not slower than Dense on this report. It is a wash.</div>
+  <ul>
+    <li><strong>Failure rate.</strong> The three curves coincide (DFS picks a different particular solution on a handful of trials: 0.047 vs 0.048).</li>
+    <li><strong>GE / elimination only.</strong> DFS is a ~6% win over Sparse (9.49 vs 10.07&nbsp;ms). That is real, and tiny.</li>
+    <li><strong>Reorder.</strong> Building the DFS order costs 8.58&nbsp;ms &mdash; almost the entire Sparse GE bill, and ~15&times; the 0.58&nbsp;ms it saved.</li>
+    <li><strong>Honest solver cost (GE + reorder).</strong> DFS is <span class="lose">1.8&times; slower than Sparse</span> and still 2.6&times; faster than Dense. This is the chart the report does <em>not</em> draw, and it is where DFS &ldquo;falls behind Sparse&rdquo;.</li>
+    <li><strong>Mean decode time.</strong> All three sit at ~36&nbsp;ms. GE is 10&nbsp;&micro;s per trial on average
+        (10.07&nbsp;ms / 1000). That is <strong>0.03% of the decode</strong>. Peeling and cluster-graph bookkeeping dominate.
+        No GE trick can move this plot, which is why DFS also cannot &ldquo;beat Dense&rdquo; on the decoder the user sees.</li>
+  </ul>
+</div>
+
+<p>Toric3 is the same story at toy scale: 148 GE calls, Sparse elimination 1.24&nbsp;ms, DFS elimination 1.13&nbsp;ms,
+DFS reorder 1.19&nbsp;ms, decode ~0.33&nbsp;ms/trial for all three. The 18-qubit code is too small for fill-in to exist.</p>
+
+<!-- ============================================================ -->
+<h2 id="theory">3 &middot; Why theory said DFS should win</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Sparse GE costs roughly the number of 1s it touches, not the matrix area. Each pivot XOR
+  <code>rows[q] ^= pivot_set</code> can <em>add</em> 1s to row <code>q</code> (fill-in). A good pivot order keeps
+  those XORs local so row-sets stay small. DFS on the column-intersection graph is the cheap heuristic that
+  tries to walk locally: next pivot = a column that shares a check with the current one.
+</div>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; a chain, where DFS really is peeling</div>
+  Residual <span class="mono">c0 &mdash; chk &mdash; c1 &mdash; chk &mdash; c2 &mdash; chk &mdash; c3</span> (a tree):
+  <div class="matrix">DFS order (c0,c1,c2,c3):  each pivot meets one neighbour  -&gt; ~zero fill-in
+Random / hub-first order:   one pivot links far-apart rows   -&gt; a dense block forms</div>
+  This picture is correct &mdash; and it is also exactly the structure that <strong>M=0 peeling already deleted
+  for free</strong> before GE is ever called. What remains for GE is the 2-core: every remaining check has
+  at least two erased qubits. That is a graph of cycles, not a chain. DFS is not a fill-reducing algorithm
+  for cyclic graphs (minimum-degree / AMD / nested dissection are).
+</div>
+
+<div class="box codept">
+  <div class="label">In the code</div>
+  <span class="fileref">utilities.py &middot; dfs_order(H, E) then _sparse_solve_classical_syndrome_with_erasure</span>
+<pre><code>if reorder == "dfs":
+    col_order = dfs_order(H, erased_cols_set)   # timed into reorder_time
+else:
+    col_order = sorted(erased_cols)             # natural index order
+candidate_cols = list(col_order) + [aug_col]    # pivots tried in this order</code></pre>
+  Natural order already has HGP geometry: qubits are stored row-major from the Kronecker product, so
+  consecutive indices are usually grid-neighbours. DFS is not starting from a random permutation; it is
+  trying to beat an order that is already local.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why">4 &middot; Four reasons it does not</h2>
+
+<h3>Reason 1 &mdash; GE is the wrong bottleneck in this report</h3>
+<p>On C_625 the cascade spends ~36&nbsp;ms/trial in peeling, VH, and cluster-graph updates, and ~10&nbsp;&micro;s
+in GE. Sparse already beat Dense 4.7&times; <em>on GE</em> (47.55&nbsp;ms vs 10.07&nbsp;ms over the whole 1000-trial bin).
+That win is invisible in decode time. DFS cannot beat Dense on a plot Dense is not even on, and cannot beat
+Sparse on a plot where GE is 0.03% of the y-axis.</p>
+
+<h3>Reason 2 &mdash; the leftover matrix is 15&times;20</h3>
+<p>Fill-reducing orderings amortize their construction cost over a large sparse factorisation. Here the
+factorisation is a classical (3,4)-LDPC chunk with &le;20 columns. Peak row weight is bounded by 20.
+The 0.58&nbsp;ms DFS saved in elimination is smaller than the 8.58&nbsp;ms spent building the column graph
+by scanning dense NumPy columns:</p>
+<pre><code>H_col = H[:, c]
+for r in range(num_rows):     # full height of H, per erased column
+    if H_col[r]:
+        col_to_rows[c].add(r)</code></pre>
+<p>For a 15&times;20 cluster this scan is cheap in absolute terms and still comparable to the 34&nbsp;&micro;s
+elimination. For a global <span class="mono">H<sub>z</sub></span> (next section) it becomes a large tax.</p>
+
+<h3>Reason 3 &mdash; after peeling, DFS is the wrong heuristic</h3>
+<p>Peeling removed the degree-1 vertices. The residual is a 2-core (cycles). DFS on a cyclic graph produces
+a long snaking path whose elimination front can be <em>wider</em> than natural index order. That is the
+opposite of nested dissection. The ordering-proof experiment (below) measures this directly: at high erasure
+DFS <strong>increases</strong> XOR-writes and peak row size versus natural order. Even minimum-degree, which
+<em>does</em> cut fill-in, still loses on wall-clock because computing the order is more expensive than the
+fill it saves.</p>
+
+<h3>Reason 4 &mdash; a different particular solution is not a better decoder</h3>
+<p>Changing pivot order changes which columns are free. The solver still returns a solution of
+<span class="mono">H&middot;e = s</span> with free variables set to 0, but not necessarily the same vector,
+and not necessarily the minimum Hamming weight vector in the coset. That is why the failure-rate curves
+wiggle by a few trials (C_625: 47 vs 48 failures at p=0.32; C_1600 peel&rarr;GE at p=0.45: DFS 0.300 vs
+Sparse 0.3004). DFS is not a decoding improvement; it is a different coset representative.</p>
+
+<!-- ============================================================ -->
+<h2 id="fillin">5 &middot; Direct fill-in evidence (sister experiments)</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  The comparison report cannot test the fill-in hypothesis: the systems are too small, and it never recorded
+  XOR-writes. Two later campaigns do: they skip VH and the cluster tree, peel once (M=0), then feed the
+  <em>whole residual</em> to one Sparse GE. That is the setting where reordering was supposed to shine.
+</div>
+
+<h3>Peeling &rarr; one global Sparse GE, C_1600, 2500 trials
+(<a href="peeling_ge_full_sweep_report.html">peeling_ge_full_sweep_report.html</a>)</h3>
+<table class="params">
+<tr><th>p</th><th></th><th>Sparse (natural)</th><th>Sparse + DFS</th><th>DFS / Sparse</th></tr>
+<tr><td rowspan="4">0.32</td><td>GE time</td><td>0.75&nbsp;s</td><td>0.75&nbsp;s</td><td>~1.0&times;</td></tr>
+<tr><td>reorder</td><td>0</td><td>0.30&nbsp;s</td><td></td></tr>
+<tr><td>XOR-writes</td><td>98&nbsp;763</td><td>93&nbsp;362</td><td>0.95&times; (slight win)</td></tr>
+<tr><td>mean decode</td><td>13.75&nbsp;ms</td><td>13.75&nbsp;ms</td><td>1.0&times;</td></tr>
+<tr><td rowspan="4">0.40</td><td>GE time</td><td>37.3&nbsp;s</td><td>36.8&nbsp;s</td><td>0.99&times;</td></tr>
+<tr><td>reorder</td><td>0</td><td class="lose">16.0&nbsp;s</td><td></td></tr>
+<tr><td>XOR-writes</td><td>185&nbsp;M</td><td>164&nbsp;M</td><td>0.88&times; (real fill cut)</td></tr>
+<tr><td>mean decode</td><td class="win">29.3&nbsp;ms</td><td class="lose">35.3&nbsp;ms</td><td class="lose">1.20&times; slower</td></tr>
+<tr><td rowspan="5">0.45</td><td>GE time</td><td class="win">142.0&nbsp;s</td><td class="lose">148.7&nbsp;s</td><td class="lose">1.05&times; <em>slower elimination</em></td></tr>
+<tr><td>reorder</td><td>0</td><td class="lose">49.7&nbsp;s</td><td></td></tr>
+<tr><td>XOR-writes</td><td class="win">1.55&nbsp;B</td><td class="lose">1.68&nbsp;B</td><td class="lose">1.08&times; <em>more</em> fill</td></tr>
+<tr><td>peak row</td><td>107</td><td>111</td><td>worse</td></tr>
+<tr><td>mean decode</td><td class="win">71.0&nbsp;ms</td><td class="lose">93.3&nbsp;ms</td><td class="lose">1.31&times; slower</td></tr>
+</table>
+
+<p>At the high-erasure end, DFS fails the hypothesis on every axis that was supposed to move:
+elimination is slower, fill-in is higher, reorder is a 50-second tax, decode is 1.31&times; slower.
+The modest fill cut at p=0.40 never beats the reorder bill.</p>
+
+<h3>Four orderings, same pipeline, C_1600, 250 trials
+(<a href="ordering_comparison_report.html">ordering_comparison_report.html</a>)</h3>
+<p>At p=0.45, identical samples:</p>
+<table class="params">
+<tr><th>Order</th><th>XOR-writes</th><th>Peak row</th><th>GE time</th><th>Reorder</th><th>Mean decode</th></tr>
+<tr><td>Natural (Sparse)</td><td class="win">152&nbsp;M</td><td>98</td><td>13.93&nbsp;s</td><td>0</td><td class="win">70.2&nbsp;ms</td></tr>
+<tr><td>DFS</td><td class="lose">166&nbsp;M</td><td class="lose">114</td><td class="lose">14.99&nbsp;s</td><td>5.39&nbsp;s</td><td>96.1&nbsp;ms</td></tr>
+<tr><td>RCM</td><td>163&nbsp;M</td><td>101</td><td>15.66&nbsp;s</td><td>5.55&nbsp;s</td><td>99.9&nbsp;ms</td></tr>
+<tr><td>Minimum-degree</td><td class="win">131&nbsp;M</td><td class="win">90</td><td class="win">13.54&nbsp;s</td><td class="lose">11.07&nbsp;s</td><td class="lose">112.6&nbsp;ms</td></tr>
+</table>
+
+<div class="box note">
+  <div class="label">Heads-up &mdash; even a fill-reducing order loses</div>
+  Minimum-degree is the textbook heuristic, and it does what it says: 14% fewer XOR-writes, smaller peak row,
+  slightly faster elimination. Computing it (clique-fill updates on the column graph) costs 11&nbsp;s, ~28&times;
+  the 0.4&nbsp;s it saved. DFS is worse than natural on fill-in <em>and</em> still pays a 5&nbsp;s tax.
+  <strong>No column ordering we tried is a net win for this residual.</strong>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bec">6 &middot; The simpler BEC decoder the numbers point to</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  For the binary erasure channel the decoder already knows the support. The job is
+  &ldquo;solve <span class="mono">H<sub>z</sub>&middot;e = s</span> on the erased columns.&rdquo;
+  Peeling does the tree part in linear time. One Sparse GE in natural order does the rest.
+  VH, the cluster tree, and DFS are extra machinery that do not earn their keep on the
+  codes and rates measured here.
+</div>
+
+<p>C_1600, same 2500 samples, peeling&rarr;GE vs the paper cascade
+(<a href="peeling_ge_full_sweep_report.html">full-sweep report</a>):</p>
+<table class="params">
+<tr><th>p</th><th>Peeling &rarr; Sparse GE (natural)</th><th>Paper cascade (Sparse GE, no DFS)</th></tr>
+<tr><td>0.32</td><td class="win">FR 0.026, 13.8&nbsp;ms/trial</td><td>FR 0.042, 91.4&nbsp;ms/trial</td></tr>
+<tr><td>0.37</td><td class="win">FR 0.068, 15.8&nbsp;ms/trial</td><td>FR 0.178, 101&nbsp;ms/trial</td></tr>
+<tr><td>0.40</td><td class="win">FR 0.114, 29.3&nbsp;ms/trial</td><td class="lose">FR 0.619, 91.9&nbsp;ms/trial</td></tr>
+<tr><td>0.45</td><td class="win">FR 0.300, 71.0&nbsp;ms/trial</td><td class="lose">FR 0.9996, 61.0&nbsp;ms/trial</td></tr>
+</table>
+
+<div class="box pnp">
+  <div class="label">Pen &amp; paper &mdash; why the cascade dies at high erasure</div>
+  The cluster decoder <em>refuses</em> a cluster that still contains a cycle. At p=0.45 the residual is
+  almost surely one giant cyclic 2-core, so the cascade records 1 GE call in 2500 trials and a failure
+  rate of 0.9996. Peeling&rarr;GE does not refuse: it hands that 2-core to Sparse GE and recovers 70% of
+  the shots. That is the BEC-relevant decoder. DFS is an optional permutation in front of that GE, and
+  the permutation loses.
+</div>
+
+<div class="box codept">
+  <div class="label">In the code &mdash; the pipeline to keep</div>
+  <span class="fileref">peeling_cluster_decoder.py &middot; peeling_then_ge_decoder</span>
+<pre><code># 1. M=0 dangling-check peeling (linear in |E|)
+# 2. ONE perform_classical_syndrome_analysis_with_erasure(Hz, s, E_residual)
+#    SOLVER_CONFIG = {backend: "sparse", reorder: None}</code></pre>
+  Condition <span class="mono">sparse</span> in the peelge campaign is this decoder.
+  Condition <span class="mono">sparse_dfs</span> is the same plus <span class="mono">dfs_order</span>.
+  Drop the second.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway">7 &middot; Takeaway</h2>
+
+<div class="box idea">
+  <div class="label">Key idea</div>
+  Reordering improves GE when (i) the matrix is large, (ii) natural order is a bad permutation, and
+  (iii) the heuristic actually cuts fill-in by more than it costs to compute. None of the three hold
+  here.
+</div>
+
+<ol>
+  <li>In <a href="decoder_comparison_report.html">decoder_comparison_report.html</a>, GE runs on
+      &le;20-column classical leftovers after a cascade that already ate the trees. DFS saves ~6% of
+      an already-tiny elimination and spends that saving 15 times over on the reorder. Decode time
+      does not move; Dense, Sparse, and DFS sit on top of each other because GE is 0.03% of the decoder.</li>
+  <li>When GE <em>is</em> the residual (peeling&rarr;one global solve), DFS still loses: at p=0.45 it
+      <em>increases</em> fill-in, slows elimination, and makes the decoder 1.31&times; slower than
+      natural-order Sparse GE.</li>
+  <li>Minimum-degree does cut fill-in and still loses on wall-clock. Column reordering is the wrong
+      lever for this GF(2) residual in this Python set-XOR solver.</li>
+  <li>The simpler effective BEC decoder is <strong>M=0 peeling + Sparse GE, natural column order</strong>.
+      It is faster than the paper cascade at moderate erasure and is the only one of the two that still
+      decodes once the 2-core percolates.</li>
+</ol>
+
+<div class="footer">
+  Companion to <span class="mono">decoder_comparison_report.html</span>,
+  <span class="mono">peeling_ge_full_sweep_report.html</span>,
+  <span class="mono">ordering_comparison_report.html</span>,
+  <span class="mono">SPARSE_GE_ADVANTAGE.html</span>.
+  Numbers from the seed-matched result files in this repository (2026-06-23 cascade; 2026-06-25 peelge / ORDERPROOF).
+  Code: <span class="mono">dfs_order</span>, <span class="mono">_sparse_solve_classical_syndrome_with_erasure</span>
+  in <span class="mono">utilities.py</span>;
+  <span class="mono">cluster_syndrome_analysis_with_zeroing</span> and
+  <span class="mono">peeling_then_ge_decoder</span> in <span class="mono">peeling_cluster_decoder.py</span>.
+</div>
+
+</div>
+</body>
+</html>
