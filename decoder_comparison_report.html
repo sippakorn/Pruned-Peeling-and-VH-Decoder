@@ -39,6 +39,9 @@
     Because the seed is fixed, all conditions decode identical samples, so the failure-rate curves coincide except where DFS picks a different minimum-weight solution.
     <strong>GE time is elimination only</strong> &mdash; the DFS reordering cost is measured separately and shown in its own chart and the summary table, so it is <strong>excluded</strong> from the GE-time comparison. Times in milliseconds (GE/reorder are totals over all trials; decode time is the per-trial average).
   </div>
+  <div class="note" style="background:#fdeef3;border-color:#f0b6c8;">
+    <strong>Why Sparse + DFS does not pull ahead.</strong> This report runs the full peeling &rarr; VH &rarr; cluster cascade; GE only sees leftover classical clusters of size at most 15&times;20 (C_625). DFS saves ~6% of elimination and spends ~15&times; that saving on the reorder, so GE+reorder is slower than Sparse (18.1&nbsp;ms vs 10.1&nbsp;ms at p=0.32) while mean decode time (~36&nbsp;ms) is identical for Dense, Sparse, and DFS &mdash; GE is ~0.03% of the decoder. The fill-in hypothesis is tested in the peeling&rarr;one-global-GE campaigns; DFS increases fill-in at high erasure. Reading: <a href="WHY_DFS_FALLS_BEHIND.html">WHY_DFS_FALLS_BEHIND.html</a>.
+  </div>
   <div id="sections"></div>
 </div>
 
